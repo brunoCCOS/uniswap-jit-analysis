@@ -109,21 +109,13 @@ def _process_block(
             continue
         emitted_mints.add(sandwich.mint_tx)
         # Aggregate fees from swap records that belong to this sandwich
-        total_fees = sum(
-            r["total_fees_usd"] or 0
-            for r in swap_records
-            if r["transaction_hash"] in sandwich.swap_tx_hashes
-        )
-        fees_to_jit = sum(
-            r["fees_to_jit_usd"] or 0
-            for r in swap_records
-            if r["transaction_hash"] in sandwich.swap_tx_hashes
-        )
-        vol = sum(
-            r["volume_usd"] or 0
-            for r in swap_records
-            if r["transaction_hash"] in sandwich.swap_tx_hashes
-        )
+        swap_tx_set = set(sandwich.swap_tx_hashes)
+        total_fees = fees_to_jit = vol = 0.0
+        for r in swap_records:
+            if r["transaction_hash"] in swap_tx_set:
+                total_fees += r["total_fees_usd"] or 0
+                fees_to_jit += r["fees_to_jit_usd"] or 0
+                vol += r["volume_usd"] or 0
         jit_records.append(
             {
                 "sandwich_id": sandwich.mint_tx,
@@ -157,11 +149,14 @@ def _handle_swap(
 ) -> None:
     initial_tick = state.tick
     initial_sqrt = state.sqrt_x96
-    final_tick = _int(row.get("tick")) or initial_tick
+    _parsed_tick = _int(row.get("tick"))
+    final_tick = _parsed_tick if _parsed_tick is not None else initial_tick
     final_sqrt = parse_sqrt_x96(row.get("sqrtPriceX96"))
-    reported_liq = _int_liq(row.get("liquidity")) or state.active_liq
+    _parsed_liq = _int(row.get("liquidity"))
+    reported_liq = _parsed_liq if _parsed_liq is not None else state.active_liq
 
-    direction_up = final_tick > initial_tick
+    # Use sqrt comparison: ticks don't change for intra-tick swaps
+    direction_up = (final_sqrt > initial_sqrt) if (initial_sqrt and final_sqrt) else (final_tick > initial_tick)
     direction = "buy" if direction_up else "sell"
 
     # Prices
@@ -181,12 +176,19 @@ def _handle_swap(
 
     if a0 > 0:
         volume_usd = (a0 / 10**dec0) * p0
+    elif a1 > 0:
+        volume_usd = (a1 / 10**dec1) * p1
     else:
-        volume_usd = (abs(a1) / 10**dec1) * p1
+        volume_usd = 0.0
 
     # JIT lookup
     jit = jit_map.get(row["transaction_hash"])
     jit_liq_at_start = jit.jit_liquidity if jit else 0
+
+    fee_rate = cfg.fee_millionths / 1_000_000
+
+    # Capture before the walk mutates state.active_liq via tick crossings
+    active_liq_start = state.active_liq
 
     # ── Per-tick segment walk ──────────────────────────────────────────────
     segs = _walk_segments(
@@ -198,6 +200,7 @@ def _handle_swap(
         direction_up=direction_up,
         jit=jit,
         cfg=cfg,
+        fee_rate=fee_rate,
         p0=p0,
         p1=p1,
         tx_hash=row["transaction_hash"],
@@ -206,24 +209,46 @@ def _handle_swap(
 
     # ── Aggregate across segments ─────────────────────────────────────────
     total_seg_vol = sum(s["segment_volume_usd"] for s in segs)
-
-    # Scale fees to match actual swap volume (segment math can diverge slightly
-    # from on-chain amounts due to floating-point price approximations)
-    scale = volume_usd / total_seg_vol if total_seg_vol > 0 else 1.0
-    fee_rate = cfg.fee_millionths / 1_000_000
     total_fees = volume_usd * fee_rate
 
+    # scale = volume_usd / total_seg_vol captures two effects:
+    #   1. Fee deduction: V3 moves the price with the net (post-fee) input, so
+    #      our formula gives the net amount while the CSV reports gross. scale ≈ 1/(1-fee_rate).
+    #   2. State machine drift: if active_liq in our tick map is lower than the
+    #      on-chain value (e.g., due to large positions not in the CSV window),
+    #      segment volumes are underestimated and scale >> 1.
+    #
+    # For JIT attribution, the JIT position is always correctly tracked (it was minted
+    # in the same block). Only passive/unknown liquidity is underestimated. So:
+    #   true_total_liq ≈ our_total_liq * scale
+    #   jit_fraction   = jit_liq / (our_total_liq * scale)  ← scale-corrected denominator
+    #
+    # This correctly handles both the normal case (scale ≈ 1.003) and the drift
+    # case (scale >> 1) without any special-casing.
+    scale = volume_usd / total_seg_vol if total_seg_vol > 0 else 1.0
+
     if segs:
-        fees_to_jit = sum(s["fees_to_jit"] for s in segs) * scale
-        fees_to_passive = total_fees - fees_to_jit
         jit_liq_weighted = sum(s["jit_liquidity"] * s["segment_volume_usd"] for s in segs)
-        passive_liq_weighted = sum(s["passive_liquidity"] * s["segment_volume_usd"] for s in segs)
-        total_vol_weighted = sum(s["segment_volume_usd"] for s in segs)
-        if total_vol_weighted > 0:
-            jit_liq_weighted /= total_vol_weighted
-            passive_liq_weighted /= total_vol_weighted
-        total_active_weighted = jit_liq_weighted + passive_liq_weighted
-        jit_fraction = jit_liq_weighted / total_active_weighted if total_active_weighted > 0 else 0.0
+        total_liq_weighted = sum(s["total_liquidity"] * s["segment_volume_usd"] for s in segs)
+        if total_seg_vol > 0:
+            jit_liq_weighted /= total_seg_vol
+            total_liq_weighted /= total_seg_vol
+        # Corrected denominator: scale-adjusted total liquidity
+        corrected_total_liq = total_liq_weighted * scale
+        jit_fraction = jit_liq_weighted / corrected_total_liq if corrected_total_liq > 0 else 0.0
+        fees_to_jit = total_fees * jit_fraction
+        fees_to_passive = total_fees - fees_to_jit
+        # Passive liq estimate: scale corrects for untracked positions
+        passive_liq_weighted = corrected_total_liq - jit_liq_weighted
+
+        # Propagate scale to segment records so segment fees sum to swap fees.
+        # Segment dicts are shared-reference with segment_records, so this updates both.
+        if scale != 1.0:
+            for seg in segs:
+                seg["segment_volume_usd"] *= scale
+                seg["fees_total"] *= scale
+                seg["fees_to_jit"] *= scale
+                seg["fees_to_passive"] *= scale
     else:
         # No tick data available — fall back to start-state liquidity
         total_liq = reported_liq
@@ -258,7 +283,7 @@ def _handle_swap(
             "final_tick": final_tick,
             "ticks_crossed": len(segs),
             "direction": direction,
-            "active_liq_start": state.active_liq,
+            "active_liq_start": active_liq_start,
             "active_liq_end": reported_liq,
             "jit_liquidity_weighted": jit_liq_weighted,
             "passive_liquidity_weighted": passive_liq_weighted,
@@ -290,6 +315,7 @@ def _walk_segments(
     direction_up: bool,
     jit: JITSandwich | None,
     cfg: PoolConfig,
+    fee_rate: float,
     p0: float,
     p1: float,
     tx_hash: str,
@@ -307,7 +333,6 @@ def _walk_segments(
         return []
 
     dec0, dec1 = cfg.token0_decimals, cfg.token1_decimals
-    fee_rate = cfg.fee_millionths / 1_000_000
 
     current_sqrt = initial_sqrt
     current_tick = initial_tick

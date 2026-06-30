@@ -1,27 +1,40 @@
 """sqrtPriceX96 ↔ human-readable price conversions."""
 
-import math
+import decimal
 
 Q96 = 1 << 96
 Q192 = 1 << 192
 
+_DEC_PREC = 50
+_BASE = decimal.Decimal("1.0001")
+_Q96_DEC = decimal.Decimal(Q96)
+
 
 def tick_to_sqrt_x96(tick: int) -> int:
-    """Return sqrtPriceX96 for a given tick boundary."""
-    return int(math.sqrt(1.0001**tick) * Q96)
+    """Return sqrtPriceX96 for a given tick boundary (high-precision decimal math)."""
+    with decimal.localcontext() as ctx:
+        ctx.prec = _DEC_PREC
+        ratio = _BASE ** decimal.Decimal(tick)
+        sqrt_ratio = ratio.sqrt()
+        return int(sqrt_ratio * _Q96_DEC)
 
 
 def sqrt_x96_to_price(sqrt_x96: int, token0_decimals: int, token1_decimals: int) -> float:
     """
-    Convert sqrtPriceX96 to a human-readable price:
-        price = (token0 per token1) adjusted for decimals
+    Convert sqrtPriceX96 to human-readable token1 price in token0 units.
 
-    For USDC(6)/WETH(18): price_raw = (sqrt/Q96)^2 * 10^(18-6) → USDC per WETH.
+    sqrtPriceX96^2 / Q192 = token1_raw / token0_raw (V3 convention).
+    Inverting and adjusting for decimals gives token0 per token1 in human units:
+        price = (Q96 / sqrt_x96)^2 * 10^(token1_decimals - token0_decimals)
+
+    For USDC(6)/WETH(18): returns USDC per WETH (~2000–4000 range).
     """
     if sqrt_x96 == 0:
         return 0.0
     price_raw = (sqrt_x96 / Q96) ** 2
-    return price_raw * (10 ** (token1_decimals - token0_decimals))
+    if price_raw == 0.0:
+        return 0.0
+    return (10 ** (token1_decimals - token0_decimals)) / price_raw
 
 
 def parse_sqrt_x96(value: str | None) -> int:

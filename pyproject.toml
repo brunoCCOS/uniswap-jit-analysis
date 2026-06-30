@@ -23,3 +23,6 @@ jit-process = "scripts.process:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*", "scripts*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
