@@ -1,0 +1,5 @@
+polars>=0.20
+pyarrow>=14
+sortedcontainers>=2.4
+tqdm>=4.66
+click>=8.1
