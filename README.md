@@ -12,6 +12,7 @@ For each pool, the pipeline:
 4. For each swap, walks every crossed tick segment using V3's constant-liquidity formulas to compute the JIT vs passive liquidity split at each price step
 5. Scales segment-level fee estimates to match the actual reported swap volume (correcting for float approximation in intermediate tick sqrt prices)
 6. Writes three Parquet files per pool: enriched swaps, per-segment breakdowns, and JIT sandwich summaries
+7. The original files where the data is processed from can be downloaded from [here](https://drive.google.com/file/d/1PpwIYNRgQoqN5oVvyVEjShoMd-XEHv_Y/view?usp=drive_link)
 
 ## Repository layout
 
