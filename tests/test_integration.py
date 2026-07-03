@@ -36,11 +36,11 @@ from src.loader import CSV_SCHEMA_OVERRIDES, USED_COLUMNS
 FIXTURE = Path(__file__).parent / "fixtures" / "pool_2697600_mini.csv"
 CFG = POOL_BY_ID["2697600"]
 
-JIT_LIQ = 8_000_000_000_000_000          # 8e15
+JIT_LIQ = 8_000_000_000_000_000  # 8e15
 PASSIVE_NARROW_LIQ = 5_000_000_000_000_000  # 5e15 — PASSIVE2
-PASSIVE_WIDE_LIQ = 10_000_000_000_000_000   # 1e16 — PASSIVE1
+PASSIVE_WIDE_LIQ = 10_000_000_000_000_000  # 1e16 — PASSIVE1
 TOTAL_LIQ_SWAP2 = JIT_LIQ + PASSIVE_NARROW_LIQ + PASSIVE_WIDE_LIQ  # 23e15
-FEE_RATE = 3000 / 1_000_000                 # 0.3%
+FEE_RATE = 3000 / 1_000_000  # 0.3%
 
 
 @pytest.fixture(scope="module")
@@ -75,9 +75,18 @@ class TestOutputShape:
 
     def test_swap_records_have_expected_columns(self, pipeline_results):
         swaps, _, _ = pipeline_results
-        for col in ["transaction_hash", "direction", "volume_usd",
-                    "total_fees_usd", "fees_to_jit_usd", "fees_to_passive_usd",
-                    "active_liq_start", "active_liq_end", "is_jit", "jit_fraction_weighted"]:
+        for col in [
+            "transaction_hash",
+            "direction",
+            "volume_usd",
+            "total_fees_usd",
+            "fees_to_jit_usd",
+            "fees_to_passive_usd",
+            "active_liq_start",
+            "active_liq_end",
+            "is_jit",
+            "jit_fraction_weighted",
+        ]:
             assert col in swaps.columns
 
 
@@ -130,7 +139,11 @@ class TestFeeAttribution:
         """fees_to_jit + fees_to_passive = total_fees for every swap."""
         swaps, _, _ = pipeline_results
         for row in swaps.iter_rows(named=True):
-            diff = abs(row["fees_to_jit_usd"] + row["fees_to_passive_usd"] - row["total_fees_usd"])
+            diff = abs(
+                row["fees_to_jit_usd"]
+                + row["fees_to_passive_usd"]
+                - row["total_fees_usd"]
+            )
             assert diff < 1e-9, (
                 f"Fee mismatch on {row['transaction_hash']}: "
                 f"jit={row['fees_to_jit_usd']:.6f} + passive={row['fees_to_passive_usd']:.6f} "
@@ -141,7 +154,9 @@ class TestFeeAttribution:
         swaps, _, _ = pipeline_results
         for tx in ("0xSWAP1", "0xSWAP3"):
             row = swaps.filter(pl.col("transaction_hash") == tx)
-            assert abs(row["fees_to_jit_usd"][0]) < 1e-12, f"{tx} should have 0 JIT fees"
+            assert abs(row["fees_to_jit_usd"][0]) < 1e-12, (
+                f"{tx} should have 0 JIT fees"
+            )
 
     def test_jit_swap_has_positive_jit_fees(self, pipeline_results):
         swaps, _, _ = pipeline_results
@@ -167,7 +182,9 @@ class TestFeeAttribution:
         raw_fraction = JIT_LIQ / TOTAL_LIQ_SWAP2
         actual = swap2["jit_fraction_weighted"][0]
         # Allow 0.5% tolerance for float arithmetic
-        assert abs(actual - raw_fraction) < 0.005, f"JIT fraction: got {actual:.4f}, expected ≈{raw_fraction:.4f}"
+        assert abs(actual - raw_fraction) < 0.005, (
+            f"JIT fraction: got {actual:.4f}, expected ≈{raw_fraction:.4f}"
+        )
 
     def test_total_fees_equal_volume_times_fee_rate(self, pipeline_results):
         swaps, _, _ = pipeline_results
@@ -183,7 +200,9 @@ class TestFeeAttribution:
     def test_jit_fees_in_sandwich_record_matches_swap_record(self, pipeline_results):
         """jit_sandwiches.fees_captured_usd should equal swaps.fees_to_jit_usd for the sandwiched swap."""
         swaps, _, jits = pipeline_results
-        swap2_jit_fees = swaps.filter(pl.col("transaction_hash") == "0xSWAP2")["fees_to_jit_usd"][0]
+        swap2_jit_fees = swaps.filter(pl.col("transaction_hash") == "0xSWAP2")[
+            "fees_to_jit_usd"
+        ][0]
         sandwich_fees = jits["fees_captured_usd"][0]
         assert abs(swap2_jit_fees - sandwich_fees) < 1e-9
 
@@ -202,12 +221,14 @@ class TestActiveLiq:
         swaps, _, _ = pipeline_results
         expected = {
             "0xSWAP1": PASSIVE_WIDE_LIQ + PASSIVE_NARROW_LIQ,  # 15e15
-            "0xSWAP2": TOTAL_LIQ_SWAP2,                         # 23e15 (no tick crossings)
+            "0xSWAP2": TOTAL_LIQ_SWAP2,  # 23e15 (no tick crossings)
             "0xSWAP3": PASSIVE_WIDE_LIQ + PASSIVE_NARROW_LIQ,  # 15e15
         }
         for tx, liq in expected.items():
             row = swaps.filter(pl.col("transaction_hash") == tx)
-            assert row["active_liq_end"][0] == liq, f"{tx}: expected {liq}, got {row['active_liq_end'][0]}"
+            assert row["active_liq_end"][0] == liq, (
+                f"{tx}: expected {liq}, got {row['active_liq_end'][0]}"
+            )
 
 
 class TestDirection:
@@ -223,12 +244,107 @@ class TestDirection:
         assert swap3["direction"][0] == "sell"
 
 
+class TestNewColumns:
+    def test_tick_prices_populated_for_all_swaps(self, pipeline_results):
+        swaps, _, _ = pipeline_results
+        for col in ("initial_tick_price", "final_tick_price"):
+            assert col in swaps.columns
+            assert swaps[col].null_count() == 0, f"{col} should not have nulls"
+
+    def test_tick_price_close_to_actual_price(self, pipeline_results):
+        """initial_tick_price ≈ initial_price (same tick, slightly different because
+        actual sqrtPrice lands between tick boundaries)."""
+        swaps, _, _ = pipeline_results
+        for row in swaps.iter_rows(named=True):
+            if row["initial_price"] and row["initial_tick_price"]:
+                rel_diff = (
+                    abs(row["initial_tick_price"] - row["initial_price"])
+                    / row["initial_price"]
+                )
+                assert rel_diff < 0.02, (
+                    f"{row['transaction_hash']}: tick_price and actual_price differ by {rel_diff:.2%}"
+                )
+
+    def test_jit_liquidity_usd_positive_for_jit_swap(self, pipeline_results):
+        swaps, _, _ = pipeline_results
+        swap2 = swaps.filter(pl.col("transaction_hash") == "0xSWAP2")
+        assert swap2["jit_liquidity_usd"][0] is not None
+        assert swap2["jit_liquidity_usd"][0] > 0
+
+    def test_jit_liquidity_usd_null_for_non_jit_swaps(self, pipeline_results):
+        swaps, _, _ = pipeline_results
+        for tx in ("0xSWAP1", "0xSWAP3"):
+            row = swaps.filter(pl.col("transaction_hash") == tx)
+            assert row["jit_liquidity_usd"][0] is None, (
+                f"{tx} should have null jit_liquidity_usd"
+            )
+
+    def test_no_jit_columns_null_for_non_jit_swaps(self, pipeline_results):
+        swaps, _, _ = pipeline_results
+        for tx in ("0xSWAP1", "0xSWAP3"):
+            row = swaps.filter(pl.col("transaction_hash") == tx)
+            for col in (
+                "no_jit_final_sqrt_x96",
+                "no_jit_final_tick",
+                "no_jit_final_price",
+                "no_jit_price_impact_pct",
+            ):
+                assert row[col][0] is None, f"{tx}.{col} should be null"
+
+    def test_no_jit_columns_populated_for_jit_swap(self, pipeline_results):
+        swaps, _, _ = pipeline_results
+        swap2 = swaps.filter(pl.col("transaction_hash") == "0xSWAP2")
+        for col in (
+            "no_jit_final_sqrt_x96",
+            "no_jit_final_tick",
+            "no_jit_final_price",
+            "no_jit_price_impact_pct",
+        ):
+            assert swap2[col][0] is not None, f"SWAP2.{col} should not be null"
+
+    def test_no_jit_final_price_more_extreme(self, pipeline_results):
+        """Without JIT depth, a buy swap should end at a lower price (less token0 per token1)
+        because price moved further in the buy direction (sqrtPrice went higher)."""
+        swaps, _, _ = pipeline_results
+        swap2 = swaps.filter(pl.col("transaction_hash") == "0xSWAP2")
+        # SWAP2 is a buy (sqrtPrice goes up → price in token0/token1 goes down for USDC/WETH)
+        actual_final = swap2["final_price"][0]
+        no_jit_final = swap2["no_jit_final_price"][0]
+        # Without JIT, price moves further (less depth), so final_price is lower for buy
+        assert no_jit_final < actual_final, (
+            f"No-JIT final price {no_jit_final:.4f} should be lower than actual {actual_final:.4f} for a buy"
+        )
+
+    def test_no_jit_final_tick_more_extreme(self, pipeline_results):
+        """For a buy swap, no-JIT final tick should be >= actual final tick (price moved further)."""
+        swaps, _, _ = pipeline_results
+        swap2 = swaps.filter(pl.col("transaction_hash") == "0xSWAP2")
+        actual_tick = swap2["final_tick"][0]
+        no_jit_tick = swap2["no_jit_final_tick"][0]
+        # Buy (direction_up) → sqrt went higher → tick went higher without JIT
+        assert no_jit_tick >= actual_tick, (
+            f"No-JIT final tick {no_jit_tick} should be >= actual {actual_tick} for a buy"
+        )
+
+    def test_no_jit_price_impact_larger_in_magnitude(self, pipeline_results):
+        """Without JIT, price impact should be larger (more movement for same input)."""
+        swaps, _, _ = pipeline_results
+        swap2 = swaps.filter(pl.col("transaction_hash") == "0xSWAP2")
+        actual_impact = abs(swap2["price_impact_pct"][0])
+        no_jit_impact = abs(swap2["no_jit_price_impact_pct"][0])
+        assert no_jit_impact > actual_impact, (
+            f"No-JIT impact |{no_jit_impact:.4f}%| should exceed actual |{actual_impact:.4f}%|"
+        )
+
+
 class TestSegments:
     def test_segments_link_to_swaps(self, pipeline_results):
         swaps, segs, _ = pipeline_results
         swap_hashes = set(swaps["transaction_hash"].to_list())
         seg_hashes = set(segs["transaction_hash"].to_list())
-        assert seg_hashes.issubset(swap_hashes), "Segment hashes must reference known swaps"
+        assert seg_hashes.issubset(swap_hashes), (
+            "Segment hashes must reference known swaps"
+        )
 
     def test_segment_fee_conservation(self, pipeline_results):
         """Within each swap, sum of segment fees_to_jit + fees_to_passive = fees_total."""
@@ -236,7 +352,9 @@ class TestSegments:
         for tx_hash in segs["transaction_hash"].unique().to_list():
             tx_segs = segs.filter(pl.col("transaction_hash") == tx_hash)
             for row in tx_segs.iter_rows(named=True):
-                diff = abs(row["fees_to_jit"] + row["fees_to_passive"] - row["fees_total"])
+                diff = abs(
+                    row["fees_to_jit"] + row["fees_to_passive"] - row["fees_total"]
+                )
                 assert diff < 1e-12, f"Segment fee mismatch: {diff}"
 
     def test_jit_segments_only_within_position_range(self, pipeline_results):
@@ -255,7 +373,9 @@ class TestSegments:
         swaps, segs, _ = pipeline_results
         for row in swaps.iter_rows(named=True):
             tx = row["transaction_hash"]
-            tx_segs = segs.filter(pl.col("transaction_hash") == tx).sort("segment_index")
+            tx_segs = segs.filter(pl.col("transaction_hash") == tx).sort(
+                "segment_index"
+            )
             if len(tx_segs) == 0:
                 continue
             last_seg_sqrt = tx_segs["sqrt_price_end"][-1]

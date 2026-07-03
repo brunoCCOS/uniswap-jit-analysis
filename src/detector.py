@@ -13,10 +13,10 @@ class JITSandwich:
     burn_tx_index: int
     tick_lower: int
     tick_upper: int
-    jit_liquidity: int       # = mint.liquidity
-    burn_liquidity: int      # may differ from mint for partial JIT
-    jit_type: str            # "full" or "partial"
-    new_passive_liq: int     # mint_liq - burn_liq (liq that stays as passive)
+    jit_liquidity: int  # = mint.liquidity
+    burn_liquidity: int  # may differ from mint for partial JIT
+    jit_type: str  # "full" or "partial"
+    new_passive_liq: int  # mint_liq - burn_liq (liq that stays as passive)
     swap_tx_hashes: list[str] = field(default_factory=list)
 
 
@@ -56,7 +56,10 @@ def detect_jit(rows: list[dict]) -> dict[str, JITSandwich]:
                 continue
             if bi <= mi:
                 continue
-            if _int(b.get("tickLower")) != t_lower or _int(b.get("tickUpper")) != t_upper:
+            if (
+                _int(b.get("tickLower")) != t_lower
+                or _int(b.get("tickUpper")) != t_upper
+            ):
                 continue
 
             burn_tx_idx = int(b["transaction_index"])
@@ -66,7 +69,8 @@ def detect_jit(rows: list[dict]) -> dict[str, JITSandwich]:
             # We do NOT filter by final tick here: a swap may traverse the JIT range
             # without ending inside it. Fee attribution per-segment handles that correctly.
             sandwiched = [
-                r for _, r in swaps
+                r
+                for _, r in swaps
                 if mint_tx_idx < int(r["transaction_index"]) < burn_tx_idx
             ]
             if not sandwiched:
@@ -108,5 +112,3 @@ def _int(v) -> int | None:
         return int(f)
     except (ValueError, TypeError):
         return None
-
-

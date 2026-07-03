@@ -1,7 +1,6 @@
 """Tests for src/detector.py — JIT sandwich detection."""
 
-import pytest
-from src.detector import JITSandwich, detect_jit
+from src.detector import detect_jit
 
 
 def _row(
@@ -34,6 +33,7 @@ def _row(
 
 
 # ── Basic detection ───────────────────────────────────────────────────────────
+
 
 class TestDetectJITBasic:
     def test_empty_block_returns_empty(self):
@@ -85,6 +85,7 @@ class TestDetectJITBasic:
 
 # ── Ownership matching ────────────────────────────────────────────────────────
 
+
 class TestOwnerMatching:
     def test_different_owner_burn_not_matched(self):
         rows = [
@@ -114,6 +115,7 @@ class TestOwnerMatching:
 
 # ── Tick range matching ───────────────────────────────────────────────────────
 
+
 class TestTickRangeMatching:
     def test_different_tick_range_not_matched(self):
         rows = [
@@ -133,6 +135,7 @@ class TestTickRangeMatching:
 
 
 # ── JIT type classification ───────────────────────────────────────────────────
+
 
 class TestJITType:
     def test_full_jit_when_burn_equals_mint(self):
@@ -169,6 +172,7 @@ class TestJITType:
 
 # ── Multi-swap sandwiches ─────────────────────────────────────────────────────
 
+
 class TestMultiSwap:
     def test_multiple_swaps_all_sandwiched(self):
         rows = [
@@ -198,6 +202,7 @@ class TestMultiSwap:
 
 # ── Greedy burn matching ──────────────────────────────────────────────────────
 
+
 class TestGreedyMatching:
     def test_burn_only_used_once(self):
         """A burn matched to mint1 cannot be reused by mint2."""
@@ -219,16 +224,37 @@ class TestGreedyMatching:
     def test_second_mint_gets_no_burn_when_burned_already_used(self):
         """When only one burn exists and is used by mint1, mint2 cannot form a sandwich."""
         rows = [
-            _row("mint", 1, owner="0xA", tick_lower=100.0, tick_upper=200.0, tx_hash="0xMINT1"),
+            _row(
+                "mint",
+                1,
+                owner="0xA",
+                tick_lower=100.0,
+                tick_upper=200.0,
+                tx_hash="0xMINT1",
+            ),
             _row("swap", 2, tx_hash="0xSWAP1"),
-            _row("burn", 3, owner="0xA", tick_lower=100.0, tick_upper=200.0, tx_hash="0xBURN1"),
-            _row("mint", 4, owner="0xA", tick_lower=100.0, tick_upper=200.0, tx_hash="0xMINT2"),
+            _row(
+                "burn",
+                3,
+                owner="0xA",
+                tick_lower=100.0,
+                tick_upper=200.0,
+                tx_hash="0xBURN1",
+            ),
+            _row(
+                "mint",
+                4,
+                owner="0xA",
+                tick_lower=100.0,
+                tick_upper=200.0,
+                tx_hash="0xMINT2",
+            ),
             _row("swap", 5, tx_hash="0xSWAP2"),
             # No second burn after MINT2
         ]
         result = detect_jit(rows)
-        assert "0xSWAP1" in result                      # MINT1→BURN1 works
-        assert "0xSWAP2" not in result                  # MINT2 has no burn, never sandwiched
+        assert "0xSWAP1" in result  # MINT1→BURN1 works
+        assert "0xSWAP2" not in result  # MINT2 has no burn, never sandwiched
         assert result["0xSWAP1"].mint_tx == "0xMINT1"
 
     def test_two_independent_sandwiches_different_owners(self):
@@ -248,11 +274,39 @@ class TestGreedyMatching:
 
     def test_two_sandwiches_different_tick_ranges(self):
         rows = [
-            _row("mint", 1, owner="0xA", tick_lower=100.0, tick_upper=200.0, tx_hash="0xMINTA"),
-            _row("mint", 2, owner="0xA", tick_lower=300.0, tick_upper=400.0, tx_hash="0xMINTB"),
+            _row(
+                "mint",
+                1,
+                owner="0xA",
+                tick_lower=100.0,
+                tick_upper=200.0,
+                tx_hash="0xMINTA",
+            ),
+            _row(
+                "mint",
+                2,
+                owner="0xA",
+                tick_lower=300.0,
+                tick_upper=400.0,
+                tx_hash="0xMINTB",
+            ),
             _row("swap", 3, tx_hash="0xSWAP"),
-            _row("burn", 4, owner="0xA", tick_lower=100.0, tick_upper=200.0, tx_hash="0xBURNA"),
-            _row("burn", 5, owner="0xA", tick_lower=300.0, tick_upper=400.0, tx_hash="0xBURNB"),
+            _row(
+                "burn",
+                4,
+                owner="0xA",
+                tick_lower=100.0,
+                tick_upper=200.0,
+                tx_hash="0xBURNA",
+            ),
+            _row(
+                "burn",
+                5,
+                owner="0xA",
+                tick_lower=300.0,
+                tick_upper=400.0,
+                tx_hash="0xBURNB",
+            ),
         ]
         result = detect_jit(rows)
         assert "0xSWAP" in result
@@ -260,14 +314,30 @@ class TestGreedyMatching:
 
 # ── Result fields ─────────────────────────────────────────────────────────────
 
+
 class TestResultFields:
     def test_sandwich_fields_populated(self):
         rows = [
-            _row("mint", 1, block=5000, owner="0xJIT", tick_lower=50.0, tick_upper=150.0,
-                 liquidity=2_000_000.0, tx_hash="0xMINT"),
+            _row(
+                "mint",
+                1,
+                block=5000,
+                owner="0xJIT",
+                tick_lower=50.0,
+                tick_upper=150.0,
+                liquidity=2_000_000.0,
+                tx_hash="0xMINT",
+            ),
             _row("swap", 2, tx_hash="0xSWAP"),
-            _row("burn", 3, owner="0xJIT", tick_lower=50.0, tick_upper=150.0,
-                 liquidity=2_000_000.0, tx_hash="0xBURN"),
+            _row(
+                "burn",
+                3,
+                owner="0xJIT",
+                tick_lower=50.0,
+                tick_upper=150.0,
+                liquidity=2_000_000.0,
+                tx_hash="0xBURN",
+            ),
         ]
         s = detect_jit(rows)["0xSWAP"]
         assert s.block_number == 5000

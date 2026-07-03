@@ -1,9 +1,8 @@
 """Tests for src/enricher.py — swap handling, fee attribution, active_liq_start timing."""
 
-import pytest
 from src.config import PoolConfig
 from src.enricher import _handle_swap, _walk_segments, enrich_pool
-from src.price import Q96, tick_to_sqrt_x96
+from src.price import tick_to_sqrt_x96
 from src.state import PoolState
 
 import polars as pl
@@ -11,6 +10,7 @@ from pathlib import Path
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _usdc_weth_cfg() -> PoolConfig:
     return PoolConfig(
@@ -67,6 +67,7 @@ def _swap_row(
 
 # ── active_liq_start captured before walk ────────────────────────────────────
 
+
 class TestActiveLiqStart:
     def test_active_liq_start_is_pre_walk_value(self):
         """active_liq_start must reflect liquidity BEFORE any tick crossings."""
@@ -87,7 +88,7 @@ class TestActiveLiqStart:
         row = _swap_row(
             tick=195420,
             sqrt_x96=tick_to_sqrt_x96(195420),
-            liq=750_000,   # after crossing 195360, only the second position remains
+            liq=750_000,  # after crossing 195360, only the second position remains
         )
         _handle_swap(row, state, cfg, jit_map, swap_records, segment_records)
 
@@ -107,6 +108,7 @@ class TestActiveLiqStart:
 
 
 # ── Direction detection ───────────────────────────────────────────────────────
+
 
 class TestDirection:
     def test_buy_when_sqrt_increases(self):
@@ -145,6 +147,7 @@ class TestDirection:
 
 # ── Volume calculation ────────────────────────────────────────────────────────
 
+
 class TestVolume:
     def test_volume_uses_positive_amount0(self):
         """If a0 > 0 (token0 = USDC in), volume = a0 * price0 / 10^decimals."""
@@ -152,7 +155,13 @@ class TestVolume:
         state = _state_at(tick=195300, liq=1_000_000)
         # a0 = 1_000_000_000 USDC_smallest (= 1000 USDC at $1 each = $1000)
         # a1 = -500_000_000_000_000_000 WETH_smallest (output, negative)
-        row = _swap_row(tick=195360, a0=1_000_000_000.0, a1=-500_000_000_000_000_000.0, p0=1.0, p1=2000.0)
+        row = _swap_row(
+            tick=195360,
+            a0=1_000_000_000.0,
+            a1=-500_000_000_000_000_000.0,
+            p0=1.0,
+            p1=2000.0,
+        )
         swap_records: list[dict] = []
         _handle_swap(row, state, cfg, {}, swap_records, [])
         # volume = 1e9 / 10^6 * 1.0 = 1000.0 USD
@@ -164,8 +173,14 @@ class TestVolume:
         state = _state_at(tick=195300, liq=1_000_000)
         # a0 = -999_000_000 USDC_smallest (output), a1 = 1_000_000_000_000_000 WETH_smallest
         # 1e15 WETH_smallest * $2000/WETH / 1e18 = $2.0
-        row = _swap_row(tick=195300, sqrt_x96=tick_to_sqrt_x96(195240),
-                        a0=-999_000_000.0, a1=1_000_000_000_000_000.0, p0=1.0, p1=2000.0)
+        row = _swap_row(
+            tick=195300,
+            sqrt_x96=tick_to_sqrt_x96(195240),
+            a0=-999_000_000.0,
+            a1=1_000_000_000_000_000.0,
+            p0=1.0,
+            p1=2000.0,
+        )
         swap_records: list[dict] = []
         _handle_swap(row, state, cfg, {}, swap_records, [])
         # volume = 1e15 / 1e18 * 2000.0 = 2.0 USD
@@ -182,6 +197,7 @@ class TestVolume:
 
 
 # ── Fee attribution ───────────────────────────────────────────────────────────
+
 
 class TestFees:
     def test_total_fees_equal_volume_times_fee_rate(self):
@@ -203,7 +219,14 @@ class TestFees:
         swap_records: list[dict] = []
         _handle_swap(row, state, cfg, {}, swap_records, [])
         rec = swap_records[0]
-        assert abs(rec["fees_to_jit_usd"] + rec["fees_to_passive_usd"] - rec["total_fees_usd"]) < 1e-9
+        assert (
+            abs(
+                rec["fees_to_jit_usd"]
+                + rec["fees_to_passive_usd"]
+                - rec["total_fees_usd"]
+            )
+            < 1e-9
+        )
 
     def test_no_jit_all_fees_to_passive(self):
         """Without a JIT sandwich, all fees go to passive LPs."""
@@ -218,6 +241,7 @@ class TestFees:
 
 
 # ── Walk segments ─────────────────────────────────────────────────────────────
+
 
 class TestWalkSegments:
     def test_no_segments_when_ticks_equal(self):
@@ -295,6 +319,7 @@ class TestWalkSegments:
     def test_jit_fees_proportional_to_liquidity(self):
         """JIT liquidity = 50% of total → JIT captures ~50% of fees."""
         from src.detector import JITSandwich
+
         cfg = _usdc_weth_cfg()
         state = _state_at(tick=195300, liq=1_000_000)
 
@@ -307,7 +332,7 @@ class TestWalkSegments:
             burn_tx_index=3,
             tick_lower=195240,
             tick_upper=195420,
-            jit_liquidity=500_000,   # 50% of 1_000_000 total
+            jit_liquidity=500_000,  # 50% of 1_000_000 total
             burn_liquidity=500_000,
             jit_type="full",
             new_passive_liq=0,
@@ -333,11 +358,14 @@ class TestWalkSegments:
         for seg in segs:
             if seg["total_liquidity"] > 0:
                 ratio = seg["fees_to_jit"] / seg["fees_total"]
-                assert abs(ratio - 0.5) < 0.01, f"Expected ~50% JIT fee share, got {ratio:.3f}"
+                assert abs(ratio - 0.5) < 0.01, (
+                    f"Expected ~50% JIT fee share, got {ratio:.3f}"
+                )
 
     def test_jit_out_of_range_gets_no_fees(self):
         """JIT position outside the current tick range gets zero fees."""
         from src.detector import JITSandwich
+
         cfg = _usdc_weth_cfg()
         state = _state_at(tick=195300, liq=1_000_000)
 
@@ -348,7 +376,7 @@ class TestWalkSegments:
             mint_tx_index=1,
             burn_tx="0xBURN",
             burn_tx_index=3,
-            tick_lower=196000,   # well above the swap range
+            tick_lower=196000,  # well above the swap range
             tick_upper=197000,
             jit_liquidity=500_000,
             burn_liquidity=500_000,
@@ -378,6 +406,7 @@ class TestWalkSegments:
 
 # ── enrich_pool end-to-end ────────────────────────────────────────────────────
 
+
 class TestEnrichPool:
     def _make_df(self, rows: list[dict]) -> pl.DataFrame:
         return pl.DataFrame(rows, infer_schema_length=None)
@@ -387,34 +416,67 @@ class TestEnrichPool:
         sqrt_init = tick_to_sqrt_x96(195300)
         return [
             {
-                "block_number": 1000, "timestamp": "2021-01-01", "log_index": 0,
-                "transaction_index": 0, "transaction_hash": "0xINIT",
-                "event": "initialize", "owner_address": None,
-                "sender_address": None, "recipient_address": None, "txFrom": None,
-                "amount0": None, "token0_price_usd": None,
-                "amount1": None, "token1_price_usd": None,
-                "liquidity": None, "sqrtPriceX96": str(sqrt_init),
-                "tick": 195300.0, "tickLower": None, "tickUpper": None,
+                "block_number": 1000,
+                "timestamp": "2021-01-01",
+                "log_index": 0,
+                "transaction_index": 0,
+                "transaction_hash": "0xINIT",
+                "event": "initialize",
+                "owner_address": None,
+                "sender_address": None,
+                "recipient_address": None,
+                "txFrom": None,
+                "amount0": None,
+                "token0_price_usd": None,
+                "amount1": None,
+                "token1_price_usd": None,
+                "liquidity": None,
+                "sqrtPriceX96": str(sqrt_init),
+                "tick": 195300.0,
+                "tickLower": None,
+                "tickUpper": None,
             },
             {
-                "block_number": 1000, "timestamp": "2021-01-01", "log_index": 1,
-                "transaction_index": 1, "transaction_hash": "0xMINT",
-                "event": "mint", "owner_address": "0xLP",
-                "sender_address": None, "recipient_address": None, "txFrom": None,
-                "amount0": None, "token0_price_usd": None,
-                "amount1": None, "token1_price_usd": None,
-                "liquidity": 2_000_000.0, "sqrtPriceX96": None,
-                "tick": None, "tickLower": 195240.0, "tickUpper": 195420.0,
+                "block_number": 1000,
+                "timestamp": "2021-01-01",
+                "log_index": 1,
+                "transaction_index": 1,
+                "transaction_hash": "0xMINT",
+                "event": "mint",
+                "owner_address": "0xLP",
+                "sender_address": None,
+                "recipient_address": None,
+                "txFrom": None,
+                "amount0": None,
+                "token0_price_usd": None,
+                "amount1": None,
+                "token1_price_usd": None,
+                "liquidity": 2_000_000.0,
+                "sqrtPriceX96": None,
+                "tick": None,
+                "tickLower": 195240.0,
+                "tickUpper": 195420.0,
             },
             {
-                "block_number": 1001, "timestamp": "2021-01-02", "log_index": 0,
-                "transaction_index": 0, "transaction_hash": "0xSWAP",
-                "event": "swap", "owner_address": None,
-                "sender_address": "0xSENDER", "recipient_address": "0xRECIP", "txFrom": "0xFROM",
-                "amount0": 1_000_000_000.0, "token0_price_usd": 1.0,
-                "amount1": -5e17, "token1_price_usd": 2000.0,
-                "liquidity": 2_000_000.0, "sqrtPriceX96": str(tick_to_sqrt_x96(195360)),
-                "tick": 195360.0, "tickLower": None, "tickUpper": None,
+                "block_number": 1001,
+                "timestamp": "2021-01-02",
+                "log_index": 0,
+                "transaction_index": 0,
+                "transaction_hash": "0xSWAP",
+                "event": "swap",
+                "owner_address": None,
+                "sender_address": "0xSENDER",
+                "recipient_address": "0xRECIP",
+                "txFrom": "0xFROM",
+                "amount0": 1_000_000_000.0,
+                "token0_price_usd": 1.0,
+                "amount1": -5e17,
+                "token1_price_usd": 2000.0,
+                "liquidity": 2_000_000.0,
+                "sqrtPriceX96": str(tick_to_sqrt_x96(195360)),
+                "tick": 195360.0,
+                "tickLower": None,
+                "tickUpper": None,
             },
         ]
 
@@ -434,9 +496,15 @@ class TestEnrichPool:
         df = self._make_df(self._base_rows())
         swaps, _, _ = enrich_pool(df, _usdc_weth_cfg())
         required = [
-            "transaction_hash", "direction", "volume_usd",
-            "total_fees_usd", "fees_to_jit_usd", "fees_to_passive_usd",
-            "active_liq_start", "active_liq_end", "is_jit",
+            "transaction_hash",
+            "direction",
+            "volume_usd",
+            "total_fees_usd",
+            "fees_to_jit_usd",
+            "fees_to_passive_usd",
+            "active_liq_start",
+            "active_liq_end",
+            "is_jit",
         ]
         for col in required:
             assert col in swaps.columns, f"Missing column: {col}"
@@ -444,44 +512,76 @@ class TestEnrichPool:
     def test_no_jit_in_simple_swap(self):
         df = self._make_df(self._base_rows())
         swaps, _, jits = enrich_pool(df, _usdc_weth_cfg())
-        assert swaps["is_jit"][0] == False
+        assert not swaps["is_jit"][0]
         assert len(jits) == 0
 
     def test_jit_sandwich_detected_and_recorded(self):
         rows = self._base_rows()
-        sqrt_init = tick_to_sqrt_x96(195300)
         sqrt_final = tick_to_sqrt_x96(195360)
         # Build a full JIT sandwich: same block as swap for detection to fire
         jit_block_rows = [
             {
-                "block_number": 2000, "timestamp": "2021-01-03", "log_index": 0,
-                "transaction_index": 0, "transaction_hash": "0xJMINT",
-                "event": "mint", "owner_address": "0xJIT",
-                "sender_address": None, "recipient_address": None, "txFrom": None,
-                "amount0": None, "token0_price_usd": None,
-                "amount1": None, "token1_price_usd": None,
-                "liquidity": 500_000.0, "sqrtPriceX96": None,
-                "tick": None, "tickLower": 195240.0, "tickUpper": 195420.0,
+                "block_number": 2000,
+                "timestamp": "2021-01-03",
+                "log_index": 0,
+                "transaction_index": 0,
+                "transaction_hash": "0xJMINT",
+                "event": "mint",
+                "owner_address": "0xJIT",
+                "sender_address": None,
+                "recipient_address": None,
+                "txFrom": None,
+                "amount0": None,
+                "token0_price_usd": None,
+                "amount1": None,
+                "token1_price_usd": None,
+                "liquidity": 500_000.0,
+                "sqrtPriceX96": None,
+                "tick": None,
+                "tickLower": 195240.0,
+                "tickUpper": 195420.0,
             },
             {
-                "block_number": 2000, "timestamp": "2021-01-03", "log_index": 1,
-                "transaction_index": 1, "transaction_hash": "0xJSWAP",
-                "event": "swap", "owner_address": None,
-                "sender_address": "0xSENDER", "recipient_address": "0xRECIP", "txFrom": "0xFROM",
-                "amount0": 500_000_000.0, "token0_price_usd": 1.0,
-                "amount1": -2e17, "token1_price_usd": 2000.0,
-                "liquidity": 2_500_000.0, "sqrtPriceX96": str(sqrt_final),
-                "tick": 195360.0, "tickLower": None, "tickUpper": None,
+                "block_number": 2000,
+                "timestamp": "2021-01-03",
+                "log_index": 1,
+                "transaction_index": 1,
+                "transaction_hash": "0xJSWAP",
+                "event": "swap",
+                "owner_address": None,
+                "sender_address": "0xSENDER",
+                "recipient_address": "0xRECIP",
+                "txFrom": "0xFROM",
+                "amount0": 500_000_000.0,
+                "token0_price_usd": 1.0,
+                "amount1": -2e17,
+                "token1_price_usd": 2000.0,
+                "liquidity": 2_500_000.0,
+                "sqrtPriceX96": str(sqrt_final),
+                "tick": 195360.0,
+                "tickLower": None,
+                "tickUpper": None,
             },
             {
-                "block_number": 2000, "timestamp": "2021-01-03", "log_index": 2,
-                "transaction_index": 2, "transaction_hash": "0xJBURN",
-                "event": "burn", "owner_address": "0xJIT",
-                "sender_address": None, "recipient_address": None, "txFrom": None,
-                "amount0": None, "token0_price_usd": None,
-                "amount1": None, "token1_price_usd": None,
-                "liquidity": 500_000.0, "sqrtPriceX96": None,
-                "tick": None, "tickLower": 195240.0, "tickUpper": 195420.0,
+                "block_number": 2000,
+                "timestamp": "2021-01-03",
+                "log_index": 2,
+                "transaction_index": 2,
+                "transaction_hash": "0xJBURN",
+                "event": "burn",
+                "owner_address": "0xJIT",
+                "sender_address": None,
+                "recipient_address": None,
+                "txFrom": None,
+                "amount0": None,
+                "token0_price_usd": None,
+                "amount1": None,
+                "token1_price_usd": None,
+                "liquidity": 500_000.0,
+                "sqrtPriceX96": None,
+                "tick": None,
+                "tickLower": 195240.0,
+                "tickUpper": 195420.0,
             },
         ]
         df = self._make_df(rows + jit_block_rows)
@@ -500,16 +600,29 @@ class TestEnrichPool:
         assert abs(total - split) < 1e-9
 
     def test_empty_dataframe_returns_empty_results(self):
-        df = pl.DataFrame(schema={
-            "block_number": pl.Int64, "timestamp": pl.Utf8, "log_index": pl.Int32,
-            "transaction_index": pl.Int32, "transaction_hash": pl.Utf8,
-            "event": pl.Utf8, "owner_address": pl.Utf8, "sender_address": pl.Utf8,
-            "recipient_address": pl.Utf8, "txFrom": pl.Utf8,
-            "amount0": pl.Float64, "token0_price_usd": pl.Float64,
-            "amount1": pl.Float64, "token1_price_usd": pl.Float64,
-            "liquidity": pl.Float64, "sqrtPriceX96": pl.Utf8,
-            "tick": pl.Float64, "tickLower": pl.Float64, "tickUpper": pl.Float64,
-        })
+        df = pl.DataFrame(
+            schema={
+                "block_number": pl.Int64,
+                "timestamp": pl.Utf8,
+                "log_index": pl.Int32,
+                "transaction_index": pl.Int32,
+                "transaction_hash": pl.Utf8,
+                "event": pl.Utf8,
+                "owner_address": pl.Utf8,
+                "sender_address": pl.Utf8,
+                "recipient_address": pl.Utf8,
+                "txFrom": pl.Utf8,
+                "amount0": pl.Float64,
+                "token0_price_usd": pl.Float64,
+                "amount1": pl.Float64,
+                "token1_price_usd": pl.Float64,
+                "liquidity": pl.Float64,
+                "sqrtPriceX96": pl.Utf8,
+                "tick": pl.Float64,
+                "tickLower": pl.Float64,
+                "tickUpper": pl.Float64,
+            }
+        )
         swaps, segs, jits = enrich_pool(df, _usdc_weth_cfg())
         assert len(swaps) == 0
         assert len(segs) == 0

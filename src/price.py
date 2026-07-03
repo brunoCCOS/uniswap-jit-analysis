@@ -19,7 +19,9 @@ def tick_to_sqrt_x96(tick: int) -> int:
         return int(sqrt_ratio * _Q96_DEC)
 
 
-def sqrt_x96_to_price(sqrt_x96: int, token0_decimals: int, token1_decimals: int) -> float:
+def sqrt_x96_to_price(
+    sqrt_x96: int, token0_decimals: int, token1_decimals: int
+) -> float:
     """
     Convert sqrtPriceX96 to human-readable token1 price in token0 units.
 
@@ -35,6 +37,53 @@ def sqrt_x96_to_price(sqrt_x96: int, token0_decimals: int, token1_decimals: int)
     if price_raw == 0.0:
         return 0.0
     return (10 ** (token1_decimals - token0_decimals)) / price_raw
+
+
+def position_value_usd(
+    tick_lower: int,
+    tick_upper: int,
+    liquidity: int,
+    current_sqrt_x96: int,
+    current_tick: int,
+    token0_decimals: int,
+    token1_decimals: int,
+    p0: float,
+    p1: float,
+) -> float:
+    """
+    USD TVL of a Uniswap V3 position at the current pool price.
+
+    Uses V3 position composition formulas:
+    - Below range: fully in token0
+    - In range: both tokens, amounts depend on current sqrtPrice
+    - Above range: fully in token1
+    """
+    if liquidity == 0 or current_sqrt_x96 == 0 or p0 == 0 or p1 == 0:
+        return 0.0
+    sqrt_lower = tick_to_sqrt_x96(tick_lower)
+    sqrt_upper = tick_to_sqrt_x96(tick_upper)
+    if sqrt_lower == 0 or sqrt_upper == 0:
+        return 0.0
+
+    if current_tick < tick_lower:
+        amount0 = (
+            liquidity * (sqrt_upper - sqrt_lower) * Q96 // (sqrt_lower * sqrt_upper)
+        )
+        return (amount0 / 10**token0_decimals) * p0
+    elif current_tick >= tick_upper:
+        amount1 = liquidity * (sqrt_upper - sqrt_lower) // Q96
+        return (amount1 / 10**token1_decimals) * p1
+    else:
+        amount0 = (
+            liquidity
+            * (sqrt_upper - current_sqrt_x96)
+            * Q96
+            // (current_sqrt_x96 * sqrt_upper)
+        )
+        amount1 = liquidity * (current_sqrt_x96 - sqrt_lower) // Q96
+        return (amount0 / 10**token0_decimals) * p0 + (
+            amount1 / 10**token1_decimals
+        ) * p1
 
 
 def parse_sqrt_x96(value: str | None) -> int:
@@ -74,10 +123,14 @@ def segment_amounts(
         delta = sqrt_b - sqrt_a
         amount1 = liquidity * delta // Q96
         # amount0 is output (negative), but return as positive for volume calc
-        amount0 = liquidity * delta * Q96 // (sqrt_a * sqrt_b) if sqrt_a and sqrt_b else 0
+        amount0 = (
+            liquidity * delta * Q96 // (sqrt_a * sqrt_b) if sqrt_a and sqrt_b else 0
+        )
         return amount0, amount1
     else:
         delta = sqrt_a - sqrt_b
-        amount0 = liquidity * delta * Q96 // (sqrt_a * sqrt_b) if sqrt_a and sqrt_b else 0
+        amount0 = (
+            liquidity * delta * Q96 // (sqrt_a * sqrt_b) if sqrt_a and sqrt_b else 0
+        )
         amount1 = liquidity * delta // Q96
         return amount0, amount1

@@ -4,12 +4,21 @@ Main enrichment pipeline: sequential event walk producing per-swap and per-tick-
 
 from __future__ import annotations
 
+import math
+
 import polars as pl
 from tqdm import tqdm
 
 from src.config import PoolConfig
 from src.detector import JITSandwich, detect_jit
-from src.price import parse_sqrt_x96, segment_amounts, sqrt_x96_to_price, tick_to_sqrt_x96
+from src.price import (
+    Q96,
+    parse_sqrt_x96,
+    position_value_usd,
+    segment_amounts,
+    sqrt_x96_to_price,
+    tick_to_sqrt_x96,
+)
 from src.state import PoolState
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -56,6 +65,13 @@ def _empty_swap_record() -> dict:
         "jit_owner": None,
         "jit_tick_lower": None,
         "jit_tick_upper": None,
+        "jit_liquidity_usd": None,
+        "initial_tick_price": None,
+        "final_tick_price": None,
+        "no_jit_final_sqrt_x96": None,
+        "no_jit_final_tick": None,
+        "no_jit_final_price": None,
+        "no_jit_price_impact_pct": None,
     }
 
 
@@ -156,12 +172,18 @@ def _handle_swap(
     reported_liq = _parsed_liq if _parsed_liq is not None else state.active_liq
 
     # Use sqrt comparison: ticks don't change for intra-tick swaps
-    direction_up = (final_sqrt > initial_sqrt) if (initial_sqrt and final_sqrt) else (final_tick > initial_tick)
+    direction_up = (
+        (final_sqrt > initial_sqrt)
+        if (initial_sqrt and final_sqrt)
+        else (final_tick > initial_tick)
+    )
     direction = "buy" if direction_up else "sell"
 
     # Prices
     dec0, dec1 = cfg.token0_decimals, cfg.token1_decimals
-    initial_price = sqrt_x96_to_price(initial_sqrt, dec0, dec1) if initial_sqrt else None
+    initial_price = (
+        sqrt_x96_to_price(initial_sqrt, dec0, dec1) if initial_sqrt else None
+    )
     final_price = sqrt_x96_to_price(final_sqrt, dec0, dec1) if final_sqrt else None
 
     price_impact = None
@@ -228,14 +250,20 @@ def _handle_swap(
     scale = volume_usd / total_seg_vol if total_seg_vol > 0 else 1.0
 
     if segs:
-        jit_liq_weighted = sum(s["jit_liquidity"] * s["segment_volume_usd"] for s in segs)
-        total_liq_weighted = sum(s["total_liquidity"] * s["segment_volume_usd"] for s in segs)
+        jit_liq_weighted = sum(
+            s["jit_liquidity"] * s["segment_volume_usd"] for s in segs
+        )
+        total_liq_weighted = sum(
+            s["total_liquidity"] * s["segment_volume_usd"] for s in segs
+        )
         if total_seg_vol > 0:
             jit_liq_weighted /= total_seg_vol
             total_liq_weighted /= total_seg_vol
         # Corrected denominator: scale-adjusted total liquidity
         corrected_total_liq = total_liq_weighted * scale
-        jit_fraction = jit_liq_weighted / corrected_total_liq if corrected_total_liq > 0 else 0.0
+        jit_fraction = (
+            jit_liq_weighted / corrected_total_liq if corrected_total_liq > 0 else 0.0
+        )
         fees_to_jit = total_fees * jit_fraction
         fees_to_passive = total_fees - fees_to_jit
         # Passive liq estimate: scale corrects for untracked positions
@@ -257,6 +285,76 @@ def _handle_swap(
         jit_liq_weighted = float(jit_liq_at_start)
         passive_liq_weighted = float(total_liq - jit_liq_at_start)
         jit_fraction = jit_liq_at_start / total_liq if total_liq else 0.0
+
+    # ── Tick boundary prices ───────────────────────────────────────────────
+    initial_tick_price = sqrt_x96_to_price(tick_to_sqrt_x96(initial_tick), dec0, dec1)
+    final_tick_price = sqrt_x96_to_price(tick_to_sqrt_x96(final_tick), dec0, dec1)
+
+    # ── JIT position USD value ─────────────────────────────────────────────
+    jit_liq_usd = (
+        position_value_usd(
+            jit.tick_lower,
+            jit.tick_upper,
+            jit.jit_liquidity,
+            initial_sqrt,
+            initial_tick,
+            dec0,
+            dec1,
+            p0,
+            p1,
+        )
+        if jit
+        else None
+    )
+
+    # ── Counterfactual: swap without JIT liquidity ─────────────────────────
+    if jit:
+        # Derive net input from total_seg_vol so it is consistent with the
+        # same estimated liquidity used in the segment walk.  Using
+        # a1*(1-fee_rate) can underestimate the true net when our state
+        # machine overestimates pool liquidity (scale < 1/(1-fee_rate)),
+        # causing the counterfactual to undershoot and show less impact than
+        # the actual swap — the opposite of the correct direction.
+        if total_seg_vol > 0:
+            if direction_up and p1 > 0:
+                cfact_net_input = int(total_seg_vol * 10**dec1 / p1)
+            elif not direction_up and p0 > 0:
+                cfact_net_input = int(total_seg_vol * 10**dec0 / p0)
+            else:
+                cfact_net_input = (
+                    int(int(a1) * (1 - fee_rate))
+                    if direction_up
+                    else int(int(a0) * (1 - fee_rate))
+                )
+        else:
+            cfact_net_input = (
+                int(int(a1) * (1 - fee_rate))
+                if direction_up
+                else int(int(a0) * (1 - fee_rate))
+            )
+
+        no_jit_sqrt = _simulate_without_jit(
+            state=state,
+            initial_sqrt=initial_sqrt,
+            initial_tick=initial_tick,
+            initial_active_liq=active_liq_start,
+            direction_up=direction_up,
+            net_input=cfact_net_input,
+            jit=jit,
+        )
+        if no_jit_sqrt and no_jit_sqrt > 0:
+            no_jit_price = sqrt_x96_to_price(no_jit_sqrt, dec0, dec1)
+            no_jit_tick = math.floor(2 * math.log(no_jit_sqrt / Q96) / math.log(1.0001))
+            no_jit_impact = (
+                (no_jit_price - initial_price) / initial_price * 100.0
+                if initial_price and no_jit_price
+                else None
+            )
+        else:
+            no_jit_price = no_jit_tick = no_jit_impact = None
+        no_jit_sqrt_str = str(no_jit_sqrt) if no_jit_sqrt else None
+    else:
+        no_jit_sqrt_str = no_jit_price = no_jit_tick = no_jit_impact = None
 
     rec = _empty_swap_record()
     rec.update(
@@ -298,6 +396,13 @@ def _handle_swap(
             "jit_owner": jit.owner if jit else None,
             "jit_tick_lower": jit.tick_lower if jit else None,
             "jit_tick_upper": jit.tick_upper if jit else None,
+            "jit_liquidity_usd": jit_liq_usd,
+            "initial_tick_price": initial_tick_price,
+            "final_tick_price": final_tick_price,
+            "no_jit_final_sqrt_x96": no_jit_sqrt_str,
+            "no_jit_final_tick": no_jit_tick,
+            "no_jit_final_price": no_jit_price,
+            "no_jit_price_impact_pct": no_jit_impact,
         }
     )
     swap_records.append(rec)
@@ -344,14 +449,16 @@ def _walk_segments(
         # Use actual final sqrtPrice for the last boundary; tick formula for intermediate ones.
         # This ensures the first and last segments use the real prices from the pool,
         # not an approximation from tick_to_sqrt_x96.
-        is_last = (i == len(boundaries) - 1)
+        is_last = i == len(boundaries) - 1
         boundary_sqrt = final_sqrt if is_last else tick_to_sqrt_x96(boundary_tick)
         if boundary_sqrt == 0:
             continue
 
         # Amount produced by the V3 formula for this segment.
         # segment_amounts returns (amount0, amount1) where the INPUT token is positive.
-        amt0, amt1 = segment_amounts(current_sqrt, boundary_sqrt, active_liq, direction_up)
+        amt0, amt1 = segment_amounts(
+            current_sqrt, boundary_sqrt, active_liq, direction_up
+        )
 
         # Volume = input token only (fee is charged on input; don't double-count both legs)
         if direction_up:
@@ -402,11 +509,132 @@ def _walk_segments(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Counterfactual simulation (no JIT liquidity)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _jit_adjusted_delta(boundary_tick: int, state: PoolState, jit: JITSandwich) -> int:
+    """
+    Return the effective tick delta for a passive-only pool (JIT contribution removed).
+    JIT mint added +jit_liq at tick_lower and -jit_liq at tick_upper.
+    """
+    base = state.tick_deltas.get(boundary_tick, 0)
+    if boundary_tick == jit.tick_lower:
+        return base - jit.jit_liquidity
+    if boundary_tick == jit.tick_upper:
+        return base + jit.jit_liquidity
+    return base
+
+
+def _simulate_without_jit(
+    state: PoolState,
+    initial_sqrt: int,
+    initial_tick: int,
+    initial_active_liq: int,
+    direction_up: bool,
+    net_input: int,
+    jit: JITSandwich,
+) -> int:
+    """
+    Read-only simulation of the swap with JIT liquidity removed.
+
+    initial_active_liq must be the pre-walk active liquidity (before _walk_segments
+    called state.cross_tick_up/down), because the walk mutates state.active_liq.
+
+    net_input is the estimated net (post-fee) amount in raw token units,
+    derived from total_seg_vol so it is consistent with the segment walk's
+    estimated liquidity.  Returns the counterfactual final sqrtPriceX96.
+
+    For upward swaps (token1 in):
+        new_sqrt = current_sqrt + net_remaining * Q96 // passive_liq
+
+    For downward swaps (token0 in), solving amount0 = L*(sqrt_a-sqrt_b)*Q96/(sqrt_a*sqrt_b)
+    for sqrt_b:
+        new_sqrt = L * Q96 * sqrt_a // (net_remaining * sqrt_a + L * Q96)
+    """
+    if initial_sqrt == 0:
+        return 0
+
+    remaining = net_input
+    if remaining <= 0:
+        return initial_sqrt
+
+    # Starting passive liquidity: remove JIT from initial_active_liq if in range.
+    # initial_active_liq is the pre-walk state (before tick crossings mutated state.active_liq).
+    if jit.tick_lower <= initial_tick < jit.tick_upper:
+        current_liq = max(0, initial_active_liq - jit.jit_liquidity)
+    else:
+        current_liq = initial_active_liq
+
+    current_sqrt = initial_sqrt
+
+    # Collect all initialized boundaries in travel direction (up to 500 ticks out).
+    _MAX_TICKS = 500
+    if direction_up:
+        search_limit = initial_tick + _MAX_TICKS
+        boundaries = list(state._sorted_ticks.irange(initial_tick + 1, search_limit))
+    else:
+        search_limit = initial_tick - _MAX_TICKS
+        boundaries = list(
+            state._sorted_ticks.irange(search_limit, initial_tick - 1, reverse=True)
+        )
+
+    last_sqrt = current_sqrt
+
+    for boundary_tick in boundaries:
+        boundary_sqrt = tick_to_sqrt_x96(boundary_tick)
+        if boundary_sqrt == 0:
+            continue
+
+        if current_liq == 0:
+            # No passive depth here; advance to next boundary without consuming input.
+            current_sqrt = boundary_sqrt
+            last_sqrt = current_sqrt
+            delta = _jit_adjusted_delta(boundary_tick, state, jit)
+            current_liq = current_liq + delta if direction_up else current_liq - delta
+            current_liq = max(0, current_liq)
+            continue
+
+        if direction_up:
+            seg_capacity = current_liq * (boundary_sqrt - current_sqrt) // Q96
+            if remaining <= seg_capacity:
+                return current_sqrt + remaining * Q96 // current_liq
+            remaining -= seg_capacity
+            current_sqrt = boundary_sqrt
+            last_sqrt = current_sqrt
+            current_liq += _jit_adjusted_delta(boundary_tick, state, jit)
+        else:
+            if boundary_sqrt >= current_sqrt:
+                continue
+            seg_capacity = (
+                current_liq
+                * (current_sqrt - boundary_sqrt)
+                * Q96
+                // (boundary_sqrt * current_sqrt)
+            )
+            if remaining <= seg_capacity:
+                numerator = current_liq * Q96 * current_sqrt
+                denominator = remaining * current_sqrt + current_liq * Q96
+                return numerator // denominator
+            remaining -= seg_capacity
+            current_sqrt = boundary_sqrt
+            last_sqrt = current_sqrt
+            current_liq -= _jit_adjusted_delta(boundary_tick, state, jit)
+
+        current_liq = max(0, current_liq)
+
+    # Input exhausted beyond all tracked boundaries; return the furthest sqrt reached.
+    return last_sqrt
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def enrich_pool(df: pl.DataFrame, cfg: PoolConfig) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+def enrich_pool(
+    df: pl.DataFrame, cfg: PoolConfig
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Process all events for one pool.
 
@@ -439,9 +667,15 @@ def enrich_pool(df: pl.DataFrame, cfg: PoolConfig) -> tuple[pl.DataFrame, pl.Dat
         )
 
     return (
-        pl.from_dicts(swap_records, infer_schema_length=None) if swap_records else pl.DataFrame(),
-        pl.from_dicts(segment_records, infer_schema_length=None) if segment_records else pl.DataFrame(),
-        pl.from_dicts(jit_records, infer_schema_length=None) if jit_records else pl.DataFrame(),
+        pl.from_dicts(swap_records, infer_schema_length=None)
+        if swap_records
+        else pl.DataFrame(),
+        pl.from_dicts(segment_records, infer_schema_length=None)
+        if segment_records
+        else pl.DataFrame(),
+        pl.from_dicts(jit_records, infer_schema_length=None)
+        if jit_records
+        else pl.DataFrame(),
     )
 
 

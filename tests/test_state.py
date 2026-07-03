@@ -1,6 +1,5 @@
 """Tests for src/state.py — PoolState tick delta and liquidity tracking."""
 
-import pytest
 from src.state import PoolState
 
 
@@ -12,6 +11,7 @@ def make_state(tick: int = 100) -> PoolState:
 
 
 # ── apply_mint ────────────────────────────────────────────────────────────────
+
 
 class TestApplyMint:
     def test_in_range_increases_active_liq(self):
@@ -67,6 +67,7 @@ class TestApplyMint:
 
 # ── apply_burn ────────────────────────────────────────────────────────────────
 
+
 class TestApplyBurn:
     def test_in_range_burn_decreases_active_liq(self):
         s = make_state(tick=150)
@@ -110,6 +111,7 @@ class TestApplyBurn:
 
 # ── cross_tick_up / cross_tick_down ───────────────────────────────────────────
 
+
 class TestCrossTickUpDown:
     def test_cross_tick_up_entering_position(self):
         """Crossing tickLower going up: entering range, active_liq increases."""
@@ -146,7 +148,7 @@ class TestCrossTickUpDown:
     def test_crossing_noninitialized_tick_is_noop(self):
         s = make_state(tick=0)
         s.active_liq = 500
-        s.cross_tick_up(999)   # no position at 999
+        s.cross_tick_up(999)  # no position at 999
         assert s.active_liq == 500
 
     def test_multiple_positions_at_same_tick(self):
@@ -170,6 +172,7 @@ class TestCrossTickUpDown:
 
 
 # ── ticks_between ─────────────────────────────────────────────────────────────
+
 
 class TestTicksBetween:
     def _state_with_ticks(self, tick_liq_pairs: list[tuple[int, int]]) -> PoolState:
@@ -222,6 +225,7 @@ class TestTicksBetween:
 
 # ── apply_swap ────────────────────────────────────────────────────────────────
 
+
 class TestApplySwap:
     def test_updates_tick_and_sqrt(self):
         s = make_state(tick=100)
@@ -247,6 +251,7 @@ class TestApplySwap:
 
 
 # ── _add_delta (internal): tick cleanup ───────────────────────────────────────
+
 
 class TestAddDelta:
     def test_net_zero_delta_removes_tick(self):

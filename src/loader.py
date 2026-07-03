@@ -31,11 +31,11 @@ CSV_SCHEMA_OVERRIDES = {
     "block_number": pl.Int64,
     "log_index": pl.Int32,
     "transaction_index": pl.Int32,
-    "liquidity": pl.Float64,   # use Float64 to handle nulls cleanly; convert to int in state machine
-    "sqrtPriceX96": pl.Utf8,   # >64-bit, keep as string
-    "tick": pl.Float64,         # nullable (missing for mint/burn)
-    "tickLower": pl.Float64,    # nullable
-    "tickUpper": pl.Float64,    # nullable
+    "liquidity": pl.Float64,  # use Float64 to handle nulls cleanly; convert to int in state machine
+    "sqrtPriceX96": pl.Utf8,  # >64-bit, keep as string
+    "tick": pl.Float64,  # nullable (missing for mint/burn)
+    "tickLower": pl.Float64,  # nullable
+    "tickUpper": pl.Float64,  # nullable
     "amount0": pl.Float64,
     "amount1": pl.Float64,
     "token0_price_usd": pl.Float64,

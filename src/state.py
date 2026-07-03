@@ -9,8 +9,8 @@ from sortedcontainers import SortedList
 @dataclass
 class PoolState:
     tick: int = 0
-    sqrt_x96: int = 0           # current sqrtPriceX96 (Python big int)
-    active_liq: int = 0         # current active liquidity
+    sqrt_x96: int = 0  # current sqrtPriceX96 (Python big int)
+    active_liq: int = 0  # current active liquidity
 
     # Sparse tick delta map: tick → net liquidity delta
     # +L at tickLower, -L at tickUpper per position (V3 convention)
@@ -60,7 +60,9 @@ class PoolState:
             if not ticks or ticks[-1] != tick_end:
                 ticks.append(tick_end)
         else:
-            ticks = list(self._sorted_ticks.irange(tick_end, tick_start - 1, reverse=True))
+            ticks = list(
+                self._sorted_ticks.irange(tick_end, tick_start - 1, reverse=True)
+            )
             if not ticks or ticks[-1] != tick_end:
                 ticks.append(tick_end)
         return ticks

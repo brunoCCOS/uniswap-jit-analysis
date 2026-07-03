@@ -68,7 +68,7 @@ Produces `output/{pool_id}/` with three Parquet files and a `metadata.json` summ
 pytest
 ```
 
-115 tests across price math, state machine, JIT detection, and enrichment logic.
+158 tests across price math, state machine, JIT detection, enrichment logic, and integration.
 
 ## JIT detection logic
 
@@ -144,6 +144,12 @@ Total fees are computed from actual swap volume, then the per-segment JIT share 
 | `jit_owner` | str | JIT LP wallet address (if `is_jit`) |
 | `jit_mint_tx`, `jit_burn_tx` | str | JIT sandwich tx hashes |
 | `jit_tick_lower`, `jit_tick_upper` | int | JIT position range |
+| `jit_liquidity_usd` | float | USD TVL of JIT position at swap start (null if not JIT) |
+| `initial_tick_price`, `final_tick_price` | float | Price at tick boundary (differs from `initial_price`/`final_price` which use actual sqrtPriceX96) |
+| `no_jit_final_sqrt_x96` | str | Counterfactual final sqrtPriceX96 if JIT had not provided liquidity (null if not JIT) |
+| `no_jit_final_tick` | int | Counterfactual final tick without JIT |
+| `no_jit_final_price` | float | Counterfactual final price without JIT |
+| `no_jit_price_impact_pct` | float | Counterfactual price impact without JIT (larger magnitude than `price_impact_pct`) |
 
 ### `swap_tick_segments.parquet` — one row per tick segment per swap
 

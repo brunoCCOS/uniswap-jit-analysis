@@ -5,10 +5,10 @@ DATA_ROOT = Path("/home/brunollacer/uniswap")
 
 # Known ERC-20 token decimals by address (lowercase)
 TOKEN_DECIMALS: dict[str, int] = {
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": 6,   # USDC
-    "0xdac17f958d2ee523a2206206994597c13d831ec7": 6,   # USDT
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": 6,  # USDC
+    "0xdac17f958d2ee523a2206206994597c13d831ec7": 6,  # USDT
     "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": 18,  # WETH
-    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": 8,   # WBTC
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": 8,  # WBTC
 }
 
 TOKEN_SYMBOLS: dict[str, str] = {
