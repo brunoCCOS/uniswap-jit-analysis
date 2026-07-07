@@ -369,13 +369,13 @@ class TestSegments:
                 )
 
     def test_last_segment_uses_actual_final_sqrt(self, pipeline_results):
-        """The last segment of each swap must end at the pool's reported final sqrtPriceX96."""
+        """The last actual segment of each swap must end at the pool's reported final sqrtPriceX96."""
         swaps, segs, _ = pipeline_results
         for row in swaps.iter_rows(named=True):
             tx = row["transaction_hash"]
-            tx_segs = segs.filter(pl.col("transaction_hash") == tx).sort(
-                "segment_index"
-            )
+            tx_segs = segs.filter(
+                (pl.col("transaction_hash") == tx) & (~pl.col("is_counterfactual"))
+            ).sort("segment_index")
             if len(tx_segs) == 0:
                 continue
             last_seg_sqrt = tx_segs["sqrt_price_end"][-1]
