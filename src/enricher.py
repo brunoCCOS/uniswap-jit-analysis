@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from src.config import PoolConfig
 from src.detector import JITSandwich, detect_jit
-from src.jit_optimizer import run_jit_optimization
+from src.optimizers import run_simulation_optimizer, run_analytical_optimizer
 from src.price import (
     Q96,
     parse_sqrt_x96,
@@ -78,6 +78,11 @@ def _empty_swap_record() -> dict:
         "optimal_jit_liquidity": None,
         "optimal_utility_usd": None,
         "actual_utility_usd": None,
+        "kh_tick_lower": None,
+        "kh_tick_upper": None,
+        "kh_jit_liquidity": None,
+        "kh_optimal_utility_usd": None,
+        "kh_actual_utility_usd": None,
     }
 
 
@@ -367,7 +372,7 @@ def _handle_swap(
             no_jit_price = no_jit_tick = no_jit_impact = None
         no_jit_sqrt_str = str(no_jit_sqrt) if no_jit_sqrt else None
 
-        opt = run_jit_optimization(
+        opt_args = dict(
             state=state,
             initial_sqrt=initial_sqrt,
             initial_tick=initial_tick,
@@ -379,10 +384,14 @@ def _handle_swap(
             direction_up=direction_up,
             amount_in_raw=a1 if direction_up else a0,
             no_jit_final_tick=no_jit_tick or initial_tick,
+            budget=jit_liq_usd or 0.0,
         )
+        opt = run_simulation_optimizer(**opt_args)
+        kh = run_analytical_optimizer(**opt_args)
     else:
         no_jit_sqrt_str = no_jit_price = no_jit_tick = no_jit_impact = None
         opt = None
+        kh = None
 
     rec = _empty_swap_record()
     rec.update(
@@ -436,6 +445,11 @@ def _handle_swap(
             "optimal_jit_liquidity": opt["optimal_jit_liquidity"] if opt else None,
             "optimal_utility_usd": opt["optimal_utility_usd"] if opt else None,
             "actual_utility_usd": opt["actual_utility_usd"] if opt else None,
+            "kh_tick_lower": kh["kh_tick_lower"] if kh else None,
+            "kh_tick_upper": kh["kh_tick_upper"] if kh else None,
+            "kh_jit_liquidity": kh["kh_jit_liquidity"] if kh else None,
+            "kh_optimal_utility_usd": kh["kh_optimal_utility_usd"] if kh else None,
+            "kh_actual_utility_usd": kh["kh_actual_utility_usd"] if kh else None,
         }
     )
     swap_records.append(rec)
