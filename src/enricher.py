@@ -622,15 +622,13 @@ def _simulate_without_jit(
     dec_in = dec1 if direction_up else dec0
     p_in = p1 if direction_up else p0
 
-    # Collect all initialized boundaries in travel direction (up to 500 ticks out).
-    _MAX_TICKS = 500
+    # Collect all initialized boundaries in the travel direction (no distance cap —
+    # the simulation stops when remaining input is exhausted or L hits zero).
     if direction_up:
-        search_limit = initial_tick + _MAX_TICKS
-        boundaries = list(state._sorted_ticks.irange(initial_tick + 1, search_limit))
+        boundaries = list(state._sorted_ticks.irange(initial_tick + 1, 887272))
     else:
-        search_limit = initial_tick - _MAX_TICKS
         boundaries = list(
-            state._sorted_ticks.irange(search_limit, initial_tick - 1, reverse=True)
+            state._sorted_ticks.irange(-887272, initial_tick - 1, reverse=True)
         )
 
     last_sqrt = current_sqrt
