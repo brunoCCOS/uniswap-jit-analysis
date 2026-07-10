@@ -29,7 +29,7 @@ import os
 import sys
 
 # Make the JITUniswapOptimization library importable without installing it.
-_JIT_REPO = os.path.expanduser("~/JITUniswapOptimization")
+_JIT_REPO = os.path.expanduser("~/usr/uniswap/JITUniswapOptimization")
 if _JIT_REPO not in sys.path:
     sys.path.insert(0, _JIT_REPO)
 
@@ -37,11 +37,27 @@ from uniswap_utils.state import State  # noqa: E402  (after sys.path mutation)
 from uniswap_utils.swap import Swap  # noqa: E402
 from optimization.utility import Utility  # noqa: E402
 
+import math
+
 from src.detector import JITSandwich
 from src.config import PoolConfig
 from src.state import PoolState
 
 Q96 = 2**96
+
+# Effective ranges cap for combinatorial. Candidate positions ≈ K_eff².
+# K_eff = 50 → ~2,500 candidates. Tune to control speed vs accuracy tradeoff.
+COMB_MAX_K = 50
+
+# Swaps spanning more than this many tick-spacing ranges are skipped entirely
+# (both optimizers). At K > MAX_OPT_K the simulate() cost per call dominates
+# and the run becomes intractable.
+MAX_OPT_K = 500
+
+
+def _comb_ts_mult(K: int) -> int:
+    """Multiplier that keeps effective K ≤ COMB_MAX_K. 1 = no coarsening."""
+    return max(1, math.ceil(K / COMB_MAX_K))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -194,6 +210,7 @@ def run_simulation_optimizer(
     amount_in_raw: float,
     no_jit_final_tick: int,
     budget: float,
+    comb_tick_spacing: int | None = None,
 ) -> dict | None:
     """
     Combinatorial (simulation-based) optimizer.
@@ -203,11 +220,12 @@ def run_simulation_optimizer(
     """
     try:
         utility, actual_util, liq_scale = _build_jit_objects(
-            state, jit, cfg, amount_in_raw, direction_up, p0, p1, active_liq_start
+            state, jit, cfg, amount_in_raw, direction_up, p0, p1, active_liq_start,
         )
         result = utility.optimize(
             budget,
             method="combinatorial",
+            candidate_ts=comb_tick_spacing,
         )
         if result.get("lower_tick") is None:
             return None
@@ -250,7 +268,7 @@ def run_analytical_optimizer(
     """
     try:
         utility, actual_util, liq_scale = _build_jit_objects(
-            state, jit, cfg, amount_in_raw, direction_up, p0, p1, active_liq_start
+            state, jit, cfg, amount_in_raw, direction_up, p0, p1, active_liq_start,
         )
         result = utility.optimize(budget, method="analytical")
         if result.get("lower_tick") is None:

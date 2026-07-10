@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from src.config import PoolConfig
 from src.detector import JITSandwich, detect_jit
-from src.optimizers import run_simulation_optimizer, run_analytical_optimizer
+from src.optimizers import run_simulation_optimizer, run_analytical_optimizer, _comb_ts_mult, MAX_OPT_K
 from src.price import (
     Q96,
     parse_sqrt_x96,
@@ -83,6 +83,7 @@ def _empty_swap_record() -> dict:
         "kh_jit_liquidity": None,
         "kh_optimal_utility_usd": None,
         "kh_actual_utility_usd": None,
+        "comb_ts_mult": None,
     }
 
 
@@ -372,6 +373,10 @@ def _handle_swap(
             no_jit_price = no_jit_tick = no_jit_impact = None
         no_jit_sqrt_str = str(no_jit_sqrt) if no_jit_sqrt else None
 
+        tick_span_k = abs((no_jit_tick or initial_tick) - initial_tick) // cfg.tick_spacing
+        comb_ts_mult = _comb_ts_mult(tick_span_k)
+        comb_tick_spacing = cfg.tick_spacing * comb_ts_mult
+
         opt_args = dict(
             state=state,
             initial_sqrt=initial_sqrt,
@@ -386,8 +391,12 @@ def _handle_swap(
             no_jit_final_tick=no_jit_tick or initial_tick,
             budget=jit_liq_usd or 0.0,
         )
-        opt = run_simulation_optimizer(**opt_args)
-        kh = run_analytical_optimizer(**opt_args)
+        if tick_span_k > MAX_OPT_K:
+            opt = None
+            kh = None
+        else:
+            opt = run_simulation_optimizer(**opt_args, comb_tick_spacing=comb_tick_spacing)
+            kh = run_analytical_optimizer(**opt_args)
     else:
         no_jit_sqrt_str = no_jit_price = no_jit_tick = no_jit_impact = None
         opt = None
@@ -450,6 +459,7 @@ def _handle_swap(
             "kh_jit_liquidity": kh["kh_jit_liquidity"] if kh else None,
             "kh_optimal_utility_usd": kh["kh_optimal_utility_usd"] if kh else None,
             "kh_actual_utility_usd": kh["kh_actual_utility_usd"] if kh else None,
+            "comb_ts_mult": comb_ts_mult if jit else None,
         }
     )
     swap_records.append(rec)

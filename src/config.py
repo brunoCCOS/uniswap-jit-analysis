@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-DATA_ROOT = Path("/home/brunollacer/uniswap")
+DATA_ROOT = Path("/home/brunollacer/usr/uniswap")
 
 # Known ERC-20 token decimals by address (lowercase)
 TOKEN_DECIMALS: dict[str, int] = {

@@ -1,6 +1,8 @@
 """sqrtPriceX96 ↔ human-readable price conversions."""
 
 import decimal
+import math
+from functools import lru_cache
 
 Q96 = 1 << 96
 Q192 = 1 << 192
@@ -8,15 +10,19 @@ Q192 = 1 << 192
 _DEC_PREC = 50
 _BASE = decimal.Decimal("1.0001")
 _Q96_DEC = decimal.Decimal(Q96)
+_LOG_BASE_HALF = math.log(1.0001) / 2  # ln(1.0001) / 2, used by tick_to_sqrt_x96
 
 
+@lru_cache(maxsize=65536)
 def tick_to_sqrt_x96(tick: int) -> int:
-    """Return sqrtPriceX96 for a given tick boundary (high-precision decimal math)."""
-    with decimal.localcontext() as ctx:
-        ctx.prec = _DEC_PREC
-        ratio = _BASE ** decimal.Decimal(tick)
-        sqrt_ratio = ratio.sqrt()
-        return int(sqrt_ratio * _Q96_DEC)
+    """Return sqrtPriceX96 for a given tick boundary.
+
+    Uses float arithmetic (53-bit mantissa), which is accurate to ~15 significant
+    digits — sufficient for segment volume accounting in _walk_segments. The
+    optimizer's own simulation uses the Q96 integer path in Swap.simulate(), so
+    this function's float approximation never enters the optimization loop.
+    """
+    return int(math.exp(tick * _LOG_BASE_HALF) * Q96)
 
 
 def sqrt_x96_to_price(

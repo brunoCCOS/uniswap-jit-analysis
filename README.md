@@ -12,7 +12,7 @@ For each pool, the pipeline:
 4. For each swap, walks every crossed tick segment using V3's constant-liquidity formulas to compute the JIT vs passive liquidity split at each price step
 5. Scales segment-level fee estimates to match actual reported swap volume (correcting for float approximation in intermediate tick sqrt prices)
 6. For each JIT swap: re-simulates the swap **without** the JIT position to produce counterfactual tick segments and final price
-7. For each JIT swap: searches ±2 tick-spacings around the actual JIT range to find the tick range and liquidity level that would have maximised the JIT LP's utility (fees + mark-to-market P&L) given the same capital
+7. For each JIT swap: runs combinatorial and analytical optimizers to find the tick range and liquidity level that would have maximised the JIT LP's utility (fees + mark-to-market P&L) given the same capital
 8. Writes three Parquet files per pool: enriched swaps, per-segment breakdowns, and JIT sandwich summaries
 
 ---
@@ -27,9 +27,9 @@ src/
   detector.py      — JIT sandwich detection within a single block
   price.py         — sqrtPriceX96 ↔ price conversions; V3 segment amount formulas
   enricher.py      — Main pipeline: per-block processing, segment walk, fee attribution,
-                     counterfactual simulation, optimizer call
-  jit_optimizer.py — Wrapper around JITUniswapOptimization library: builds passive liquidity
-                     dict, coordinate conversions, ternary-search optimisation
+                     counterfactual simulation, optimizer calls
+  optimizers.py    — Bridge to JITUniswapOptimization: passive-liquidity reconstruction,
+                     unit conversions, combinatorial + analytical optimizer calls
 scripts/
   process.py            — CLI entry point (single pool or --all [--parallel])
   analyze_tick_crossings.py — Distribution of ticks crossed per swap (--no-jit for counterfactual)
@@ -48,7 +48,8 @@ output/
 ```
 
 External dependency: `/home/brunollacer/JITUniswapOptimization` — a Uniswap V3 JIT optimisation
-library (float/Decimal model). Imported via `sys.path.insert` in `jit_optimizer.py`.
+library with simulation-based and analytical optimizers. Imported via `sys.path.insert` in
+`src/optimizers.py`.
 
 ---
 
@@ -134,7 +135,7 @@ Implemented in `price.py` as `sqrt_x96_to_price` and used for all `*_price` and 
 
 ### 3. Library (JITUniswapOptimization): adjusted sqrt price and scaled liquidity
 
-The optimiser library uses a **decimal-adjusted** sqrt price and a **scaled liquidity**:
+The optimizer library uses a **decimal-adjusted** sqrt price and a **scaled liquidity**:
 
 ```
 sqrt_lib  = sqrtPriceX96 / 2^96 / 10^((dec1−dec0)/2)
@@ -152,12 +153,13 @@ This pairing ensures the standard V3 formulas produce **human-readable token amo
 
 Passing `L_raw` without scaling would inflate amounts by `10^((dec0+dec1)/2)`. For USDC/WETH that is `10^12` — making tick-crossing comparisons nonsensical and utility calculations meaningless.
 
-**Conversion in `jit_optimizer.py`:**
+**Conversion in `src/optimizers.py`:**
 
 ```python
-dec_scale = 10 ** ((dec0 + dec1) / 2)
-sqrt_lib  = Decimal(str(initial_sqrt / 2**96 / 10**((dec1-dec0)/2)))
-L_lib     = float(L_raw) / dec_scale
+liq_scale  = 10 ** ((dec0 + dec1) / 2)
+sqrt_lib   = sqrtPriceX96 / 2**96 * 10 ** ((dec0 - dec1) / 2)
+L_lib      = L_raw / liq_scale
+amount_lib = amount_raw / 10**dec_in
 ```
 
 Stored `optimal_jit_liquidity` is converted back to raw units (`L_lib × dec_scale`) so it is directly comparable to the on-chain `jit_liquidity` values in `jit_sandwiches.parquet`.
@@ -189,7 +191,7 @@ Matching is greedy: the first valid burn after each mint is used. A burn can onl
 price = 10^(dec1 − dec0) / (sqrtPriceX96 / 2^96)^2
 ```
 
-Intermediate tick sqrt prices used in the segment walk are computed with 50-digit `Decimal` precision to avoid float error accumulation at large tick values.
+Intermediate tick sqrt prices used in the segment walk are computed with cached float `exp(tick × ln(1.0001)/2)` for speed. Actual swap endpoints still use on-chain `sqrtPriceX96`, and optimizer scoring uses the external library's integer/Q96 simulation path.
 
 ### Segment amount formulas (V3 constant-L)
 
@@ -227,7 +229,7 @@ amount0, amount1 = V3 formulas(L_raw, sqrtP_lower, sqrtP_upper, sqrtP_current)
 jit_liquidity_usd = amount0 × price0_usd + amount1 × price1_usd
 ```
 
-This value is stored for reference but is **not** used as the optimiser budget. See Optimiser section.
+This value is also used as the optimizer budget: the optimizer searches for the best allocation of the same USD capital deployed by the actual JIT position.
 
 ### Counterfactual price impact
 
@@ -241,9 +243,14 @@ A larger absolute value than `price_impact_pct` means the JIT absorbed price imp
 
 ---
 
-## JIT optimiser
+## JIT optimizers
 
-For each JIT swap, the pipeline searches for the tick range and liquidity amount that would have maximised the JIT LP's **utility** given the same capital the actual bot deployed.
+For each JIT swap, the pipeline runs two optimizer modes from `JITUniswapOptimization` to find the tick range and liquidity amount that would have maximised the JIT LP's **utility** given the same capital the actual bot deployed:
+
+- **Combinatorial** (`optimal_*` columns): enumerates candidate tick ranges and line-searches liquidity for each range using full swap simulation.
+- **Analytical** (`kh_*` columns): closed-form Khushboo/MATLAB-derived optimizer, then scored through the same simulation utility.
+
+Both modes use the same reconstructed passive-liquidity book and report liquidity back in raw on-chain units.
 
 ### Utility definition
 
@@ -258,34 +265,32 @@ A negative utility means the impermanent loss exceeded the fees earned.
 
 ### Budget derivation
 
-The budget is the USD value of the **actual** JIT position, computed using the library's own float/Decimal model:
+The budget is the USD value of the **actual** JIT position at the swap start, computed in `price.py::position_value_usd` with Q64.96 formulas:
 
 ```python
-actual_pos = Position(L_raw / dec_scale, tick_lower, tick_upper)
-budget     = actual_pos.value(sqrt_lib, price0, price1, dec0, dec1)
-         # = amount0_human × price0 + amount1_human × price1
+budget = jit_liquidity_usd
+       = amount0_human × token0_price_usd + amount1_human × token1_price_usd
 ```
 
-Using the library's model (not our Q64.96 `position_value_usd`) ensures the round-trip is exact:
+### Search procedure and runtime controls
 
+1. Reconstruct `passive_dict = {rounded_tick: L_lib}` from `active_liq_start` and the full sparse tick-delta map, with the JIT position removed.
+2. Densify the passive book only over the no-JIT reachable tick window: from `initial_tick` to `no_jit_final_tick` plus one native tick-spacing buffer.
+3. Build the library `State`, `Swap`, and `Utility` objects in human-token units.
+4. Score the actual on-chain JIT range/liquidity with `position_utility`.
+5. Run:
+   - combinatorial search on an adaptive candidate grid;
+   - analytical search at native pool tick spacing.
+
+The combinatorial candidate grid is coarsened for wide no-JIT moves:
+
+```python
+COMB_MAX_K = 50
+comb_ts_mult = ceil(K / COMB_MAX_K)  # K = no-JIT tick span / pool tick_spacing
+candidate_ts = pool_tick_spacing * comb_ts_mult
 ```
-liquidity_from_budget(budget, same_range) → L_lib ≈ L_raw / dec_scale
-```
 
-Both forward and inverse use the same float/Decimal arithmetic so no cross-model scale mismatch.
-
-### Search procedure
-
-1. Build `passive_dict = {rounded_tick: L_lib}` covering every `tick_spacing` step from `initial_tick` to `no_jit_final_tick`. At each step the passive liquidity is the last known value (carry-forward from initialized boundaries), with JIT delta removed.
-2. For each candidate range `[a, b]` in `{actual_lower ± 2×tick_spacing} × {actual_upper ± 2×tick_spacing}`:
-   a. Compute `max_liq = liquidity_from_budget(budget, [a, b])` — maximum allocatable L_lib
-   b. Run ternary search on `utility(L) for L in [0, max_liq]` to find the optimal liquidity level
-3. Keep the `[a, b, L]` triple with the highest utility.
-4. Compare against `utility(actual_pos)` at the actual on-chain range and liquidity.
-
-Ternary search epsilon: `max(max_liq × 1e-3, 1.0)` — relative tolerance that keeps iteration count bounded at ~25 regardless of liquidity scale.
-
-All library stdout (including "Liquidity is zero" debug prints) is suppressed via `contextlib.redirect_stdout`.
+This keeps candidate ranges roughly bounded by `COMB_MAX_K²`. The swap simulation itself still uses native pool tick spacing for liquidity accounting. If a JIT swap spans more than `MAX_OPT_K = 500` native ranges in the no-JIT counterfactual, both optimizers are skipped for that row to avoid pathological runtimes.
 
 ---
 
@@ -326,15 +331,21 @@ All library stdout (including "Liquidity is zero" debug prints) is suppressed vi
 | `no_jit_final_tick` | int | Counterfactual final tick without JIT |
 | `no_jit_final_price` | float | Counterfactual final price without JIT |
 | `no_jit_price_impact_pct` | float | Counterfactual price impact; larger magnitude than `price_impact_pct` when JIT absorbed price impact |
-| `optimal_tick_lower`, `optimal_tick_upper` | int | Best tick range found by the optimiser (null if not JIT) |
-| `optimal_jit_liquidity` | float | Optimal liquidity at that range, in raw on-chain units (null if not JIT) |
-| `optimal_utility_usd` | float | Utility (P&L + fees) at the optimal allocation (null if not JIT) |
-| `actual_utility_usd` | float | Utility of the actual on-chain JIT position (null if not JIT); negative means the bot lost money on this swap |
+| `optimal_tick_lower`, `optimal_tick_upper` | int | Best tick range found by the combinatorial optimizer (null if not JIT or skipped) |
+| `optimal_jit_liquidity` | float | Combinatorial optimal liquidity at that range, in raw on-chain units (null if not JIT or skipped) |
+| `optimal_utility_usd` | float | Utility (P&L + fees) at the combinatorial optimum (null if not JIT or skipped) |
+| `actual_utility_usd` | float | Utility of the actual on-chain JIT position as scored by the combinatorial utility object (null if not JIT or skipped); negative means the bot lost money on this swap |
+| `kh_tick_lower`, `kh_tick_upper` | int | Best tick range found by the analytical/Khushboo optimizer (null if not JIT or skipped) |
+| `kh_jit_liquidity` | float | Analytical optimal liquidity, in raw on-chain units (null if not JIT or skipped) |
+| `kh_optimal_utility_usd` | float | Utility at the analytical optimum (null if not JIT or skipped) |
+| `kh_actual_utility_usd` | float | Utility of the actual on-chain JIT position as scored by the analytical utility object (null if not JIT or skipped) |
+| `comb_ts_mult` | int | Candidate tick-spacing multiplier used by the combinatorial optimizer; `1` means native spacing, larger values mean coarser search grid |
 
 **Interpretation notes:**
-- `optimal_utility_usd >= actual_utility_usd` always holds (optimiser is a maximum search). The gap quantifies how much the JIT bot underperformed relative to the best allocation of the same capital.
+- `optimal_utility_usd >= actual_utility_usd` should hold when the combinatorial optimizer runs to completion. The gap quantifies how much the JIT bot underperformed relative to the best allocation of the same capital.
+- Compare `optimal_*` versus `kh_*` to assess loss from combinatorial grid coarsening and numerical/model differences.
+- Null optimizer columns on a JIT row can mean the no-JIT span exceeded `MAX_OPT_K` or the external optimizer failed for that event.
 - `actual_utility_usd < 0` means impermanent loss exceeded fees on this specific swap.
-- `optimal_utility_usd = 0` with `actual_utility_usd < 0` means no tick range in the search neighbourhood could turn a profit; the bot should not have participated.
 
 ---
 
@@ -405,7 +416,8 @@ JIT rate is highest on the 0.05% WETH pool (2697765): 8,483 sandwiches across 1.
 ## Known limitations
 
 - **Greedy JIT matching**: when a wallet mints twice in one block on the same tick range, the earliest valid burn is matched to the first mint. The second mint is unmatched even if a later burn exists.
-- **Optimiser fee formula**: the JITUniswapOptimization library computes fees as `fee = net_in × fee_rate` rather than the V3 spec's `fee = gross_in × fee_rate`, underestimating fees by ~`fee_rate` in relative terms (~0.3% at the 0.3% tier). This does not affect the optimality ranking but slightly deflates both `optimal_utility_usd` and `actual_utility_usd`.
-- **Optimiser search radius**: the tick range search is bounded to ±2 tick-spacings around the actual JIT position for runtime tractability. A globally optimal range far from the actual position is not found.
+- **Optimizer fee formula**: the JITUniswapOptimization library computes fees as `fee = net_in × fee_rate` rather than the V3 spec's `fee = gross_in × fee_rate`, underestimating fees by ~`fee_rate` in relative terms (~0.3% at the 0.3% tier). This does not affect the optimality ranking but slightly deflates utility values.
+- **Combinatorial grid coarsening**: for wide no-JIT moves, the combinatorial optimizer searches a coarser candidate grid (`comb_ts_mult > 1`). This is a runtime/accuracy tradeoff; the analytical `kh_*` result is the native-spacing reference.
+- **Pathological no-JIT spans skipped**: if the no-JIT counterfactual spans more than `MAX_OPT_K = 500` native tick ranges, both optimizers are skipped for that JIT event.
 - **Hard-coded data root**: `DATA_ROOT` in `config.py` must be updated manually.
-- **Float precision in prices**: `initial_price`/`final_price` columns use Python float (~15 sig figs). This does not affect fee calculations (those use on-chain USD prices from the CSV).
+- **Float precision in prices/tick boundaries**: human price columns and intermediate tick-boundary sqrt values use Python float (~15 sig figs). Actual swap endpoints use on-chain `sqrtPriceX96`; fee calculations use on-chain USD prices from the CSV.
