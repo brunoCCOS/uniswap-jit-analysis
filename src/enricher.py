@@ -78,11 +78,19 @@ def _empty_swap_record() -> dict:
         "optimal_jit_liquidity": None,
         "optimal_utility_usd": None,
         "actual_utility_usd": None,
-        "kh_tick_lower": None,
-        "kh_tick_upper": None,
-        "kh_jit_liquidity": None,
+
+        "kh_range-0_tick_lower": None,
+        "kh_range-0_tick_upper": None,
+        "kh_range-0_jit_liquidity": None,
+        "kh_range-0_optimal_utility_usd": None,
+        "kh_range-0_actual_utility_usd": None,
+
+        "kh_range-1_tick_lower": None,
+        "kh_range-1_tick_upper": None,
+        "kh_range-1_jit_liquidity": None,
         "kh_optimal_utility_usd": None,
         "kh_actual_utility_usd": None,
+        
         "comb_ts_mult": None,
     }
 
@@ -394,14 +402,18 @@ def _handle_swap(
         if tick_span_k > MAX_OPT_K:
             opt = None
             kh = None
+            if jit is not None:
+                from pprint import pprint
+                pprint(f"{type(kh)}, {type(jit)}")
         else:
             opt = run_simulation_optimizer(**opt_args, comb_tick_spacing=comb_tick_spacing)
             kh = run_analytical_optimizer(**opt_args)
+
     else:
         no_jit_sqrt_str = no_jit_price = no_jit_tick = no_jit_impact = None
         opt = None
         kh = None
-
+        
     rec = _empty_swap_record()
     rec.update(
         {
@@ -454,11 +466,18 @@ def _handle_swap(
             "optimal_jit_liquidity": opt["optimal_jit_liquidity"] if opt else None,
             "optimal_utility_usd": opt["optimal_utility_usd"] if opt else None,
             "actual_utility_usd": opt["actual_utility_usd"] if opt else None,
-            "kh_tick_lower": kh["kh_tick_lower"] if kh else None,
-            "kh_tick_upper": kh["kh_tick_upper"] if kh else None,
-            "kh_jit_liquidity": kh["kh_jit_liquidity"] if kh else None,
+            
+            "kh_range-0_tick_lower": kh["kh_range-0_tick_lower"] if kh else None,
+            "kh_range-0_tick_upper": kh["kh_range-0_tick_upper"] if kh else None,
+            "kh_range-0_jit_liquidity": kh["kh_range-0_jit_liquidity"] if kh else None,
+
+            "kh_range-1_tick_lower": kh["kh_range-1_tick_lower"] if kh else None,
+            "kh_range-1_tick_upper": kh["kh_range-1_tick_upper"] if kh else None,
+            "kh_range-1_jit_liquidity": kh["kh_range-1_jit_liquidity"] if kh else None,
+            
             "kh_optimal_utility_usd": kh["kh_optimal_utility_usd"] if kh else None,
             "kh_actual_utility_usd": kh["kh_actual_utility_usd"] if kh else None,
+
             "comb_ts_mult": comb_ts_mult if jit else None,
         }
     )
