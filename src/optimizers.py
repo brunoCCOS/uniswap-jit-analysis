@@ -35,6 +35,7 @@ if _JIT_REPO not in sys.path:
 
 from uniswap_utils.state import State  # noqa: E402  (after sys.path mutation)
 from uniswap_utils.swap import Swap  # noqa: E402
+from uniswap_utils.position import Position
 from optimization.utility import Utility  # noqa: E402
 
 import math
@@ -170,7 +171,7 @@ def _build_jit_objects(
     amount_in_lib = amount_in_raw / 10**dec_in
 
     jit_state = State(
-        price=_sqrt_human(pool_state, dec0, dec1),
+        price_sqrt=_sqrt_human(pool_state, dec0, dec1),
         passive_dict=passive_dict_lib,
         tick_space=cfg.tick_spacing,
         fee_rate=cfg.fee_millionths / 1_000_000,
@@ -186,9 +187,8 @@ def _build_jit_objects(
 
     # Actual on-chain JIT position in library L units.
     jit_liq_lib = jit.jit_liquidity / liq_scale
-    actual_util = float(utility.position_utility(
-        jit.tick_lower, jit.tick_upper, jit_liq_lib
-    ))
+    actual_util = float(utility.positions_utility(Position(jit_liq_lib, jit.tick_lower, jit.tick_upper)))
+
     return utility, actual_util, liq_scale
 
 
@@ -230,9 +230,7 @@ def run_simulation_optimizer(
         if result.get("lower_tick") is None:
             return None
         optimal_util = float(
-            utility.position_utility(
-                result["lower_tick"], result["upper_tick"], result["liquidity"]
-            )
+            utility.positions_utility(result)
         )
         return {
             "optimal_tick_lower": result["lower_tick"],
@@ -270,20 +268,39 @@ def run_analytical_optimizer(
         utility, actual_util, liq_scale = _build_jit_objects(
             state, jit, cfg, amount_in_raw, direction_up, p0, p1, active_liq_start,
         )
-        result = utility.optimize(budget, method="analytical")
-        if result.get("lower_tick") is None:
+        results = utility.optimize(budget, method="analytical")
+        if not results:
             return None
         optimal_util = float(
-            utility.position_utility(
-                result["lower_tick"], result["upper_tick"], result["liquidity"]
-            )
+            utility.positions_utility(results)
         )
-        return {
-            "kh_tick_lower": result["lower_tick"],
-            "kh_tick_upper": result["upper_tick"],
-            "kh_jit_liquidity": float(result["liquidity"]) * liq_scale,
-            "kh_optimal_utility_usd": optimal_util,
-            "kh_actual_utility_usd": actual_util,
+
+        output = {
+            "kh_range-0_tick_lower": None, 
+            "kh_range-0_tick_upper": None, 
+            "kh_range-0_jit_liquidity": None, 
+
+            "kh_range-1_tick_lower": None, 
+            "kh_range-1_tick_upper": None, 
+            "kh_range-1_jit_liquidity": None, 
+
+            "kh_optimal_utility_usd": None, 
+            "kh_actual_utility_usd": None, 
         }
-    except Exception:
+
+        for i, position in enumerate(results):
+            output.update({
+                f"kh_range-{i}_tick_lower": position.lower_tick,
+                f"kh_range-{i}_tick_upper": position.upper_tick,
+                f"kh_range-{i}_jit_liquidity": float(position.liq) * liq_scale,
+            })
+
+        output.update({
+            f"kh_optimal_utility_usd": optimal_util,
+            f"kh_actual_utility_usd": actual_util
+        })
+            
+        return output
+    except Exception as e:
+        raise e
         return None
