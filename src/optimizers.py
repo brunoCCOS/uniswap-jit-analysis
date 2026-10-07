@@ -222,21 +222,26 @@ def run_simulation_optimizer(
         utility, actual_util, liq_scale = _build_jit_objects(
             state, jit, cfg, amount_in_raw, direction_up, p0, p1, active_liq_start,
         )
-        result = utility.optimize(
+        # Utility.optimize(method="combinatorial") returns a list[Position]
+        # (one element) — not the raw {lower_tick, upper_tick, liquidity}
+        # dict that CombinatorialOptimizer.optimize produces internally, and
+        # it has no "candidate_ts" parameter (that kwarg isn't accepted by
+        # the combinatorial search path at all and raises a TypeError).
+        results = utility.optimize(
             budget,
             method="combinatorial",
-            candidate_ts=comb_tick_spacing,
         )
-        if result.get("lower_tick") is None:
+        if not results or results[0].lower_tick is None:
             return None
+        position = results[0]
         optimal_util = float(
-            utility.positions_utility(result)
+            utility.positions_utility(position)
         )
         return {
-            "optimal_tick_lower": result["lower_tick"],
-            "optimal_tick_upper": result["upper_tick"],
+            "optimal_tick_lower": position.lower_tick,
+            "optimal_tick_upper": position.upper_tick,
             # Convert library L back to raw Uniswap L for comparability.
-            "optimal_jit_liquidity": float(result["liquidity"]) * liq_scale,
+            "optimal_jit_liquidity": float(position.liq) * liq_scale,
             "optimal_utility_usd": optimal_util,
             "actual_utility_usd": actual_util,
         }
