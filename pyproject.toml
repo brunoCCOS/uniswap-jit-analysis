@@ -12,6 +12,9 @@ dependencies = [
     "sortedcontainers>=2.4",
     "tqdm>=4.66",
     "click>=8.1",
+    "tikzplotlib>=0.10.1",
+    "matplotlib<3.9",
+    "webcolors<24",
 ]
 
 [project.optional-dependencies]

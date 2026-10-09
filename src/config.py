@@ -1,3 +1,14 @@
+"""
+Pool registry: known Uniswap V3 pools, their token addresses/decimals/fee
+tiers, and the on-disk location of their raw CSV event dumps.
+
+`DATA_ROOT` is a hard-coded absolute path (machine-specific) that the loader
+and scripts join with each pool's numbered folder to find
+`{pool_id}-Total.csv`. Token metadata (decimals, symbols) here is used to
+convert raw on-chain amounts into human-readable units throughout the
+pipeline.
+"""
+
 from dataclasses import dataclass
 from pathlib import Path
 

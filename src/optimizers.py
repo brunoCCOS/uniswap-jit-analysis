@@ -211,6 +211,7 @@ def run_simulation_optimizer(
     no_jit_final_tick: int,
     budget: float,
     comb_tick_spacing: int | None = None,
+    time_constrain: float | None = None,
 ) -> dict | None:
     """
     Combinatorial (simulation-based) optimizer.
@@ -230,6 +231,7 @@ def run_simulation_optimizer(
         results = utility.optimize(
             budget,
             method="combinatorial",
+            time_constrain=time_constrain,
         )
         if not results or results[0].lower_tick is None:
             return None
@@ -306,6 +308,5 @@ def run_analytical_optimizer(
         })
             
         return output
-    except Exception as e:
-        raise e
+    except Exception:
         return None
